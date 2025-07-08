@@ -7,16 +7,42 @@ import re
 import uvicorn
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+import logging
 
 # Local imports – these reside inside backend/teach_mode
 from teach_mode.teach_mode import TeachModeRecorder
 from teach_mode.workflow_builder import WorkflowBuilder
 from teach_mode.run_workflow import run_workflow as execute_workflow
 
+# Import routers
+from routers import workflow as workflow_router
+
 # Load environment variables early so downstream modules can access them
 load_dotenv()
 
-app = FastAPI(title="Oasis Teach-Mode API")
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Oasis OS Backend API", description="API for Teach-Mode Recording and Workflow Execution")
+
+# ------------------------------------------------
+# Available API Endpoints:
+# 
+# Teach-Mode Endpoints:
+#   POST   /start_recording/{session_name}  - Start recording a teach session
+#   POST   /stop_recording                  - Stop recording and build workflow
+#   POST   /run_workflow/{session_name}     - Execute a recorded workflow
+#
+# Workflow Management Endpoints (from routers):
+#   POST   /api/v1/workflow/execute            - Execute a workflow with query
+#   GET    /api/v1/workflow/{workflow_id}/status - Get workflow status
+#   DELETE /api/v1/workflow/{workflow_id}      - Cancel a running workflow
+#   GET    /api/v1/workflow/active             - List all active workflows
+# ------------------------------------------------
 
 # Enable CORS for frontend access (adjust origins as needed)
 app.add_middleware(
@@ -26,6 +52,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(workflow_router.router, prefix="/api/v1", tags=["workflow"])
 
 # ---------------------------
 # Internal state management
@@ -44,6 +73,28 @@ def _clean_session_name(name: str) -> str:
 # ------------------------------------------------
 #                     Endpoints
 # ------------------------------------------------
+
+@app.get("/")
+def root():
+    """Root endpoint providing API information."""
+    return {
+        "name": "Oasis OS Backend API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "endpoints": {
+            "teach_mode": [
+                "POST /start_recording/{session_name}",
+                "POST /stop_recording",
+                "POST /run_workflow/{session_name}"
+            ],
+            "workflow_management": [
+                "POST /api/v1/workflow/execute",
+                "GET /api/v1/workflow/{workflow_id}/status",
+                "DELETE /api/v1/workflow/{workflow_id}",
+                "GET /api/v1/workflow/active"
+            ]
+        }
+    }
 
 @app.post("/start_recording/{session_name}")
 def start_recording(session_name: str):

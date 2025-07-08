@@ -14,6 +14,9 @@ def main():
     backend_dir = Path(__file__).parent
     requirements_file = backend_dir / "requirements.txt"
     
+    # Add backend directory to Python path
+    sys.path.insert(0, str(backend_dir))
+    
     print("🚀 Oasis OS Backend Startup")
     print("=" * 40)
     
@@ -46,6 +49,9 @@ def main():
     print("-" * 40)
     
     try:
+        # Change to backend directory before starting
+        os.chdir(backend_dir)
+        
         from server import app
         import uvicorn
         
