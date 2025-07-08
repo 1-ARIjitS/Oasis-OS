@@ -14,8 +14,12 @@ interface Particle {
 
 export function WorkflowBackground() {
   const [particles, setParticles] = useState<Particle[]>([]);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    // Mark component as mounted to avoid hydration mismatch
+    setMounted(true);
+
     // Generate particles on client side only to avoid hydration mismatch
     const newParticles: Particle[] = [];
     
@@ -44,8 +48,8 @@ export function WorkflowBackground() {
     setParticles(newParticles);
   }, []);
 
-  // Don't render anything on server side to avoid hydration mismatch
-  if (typeof window === 'undefined') {
+  // Wait until after mount for consistent markup
+  if (!mounted) {
     return null;
   }
 

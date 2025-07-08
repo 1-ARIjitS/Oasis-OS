@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 import { Meteors } from "@/components/magicui/meteors";
 import { NumberTicker } from "@/components/magicui/number-ticker";
@@ -91,10 +91,20 @@ export default function WorkspacePage() {
   const [workflowName, setWorkflowName] = useState("");
   const [selectedWorkflow, setSelectedWorkflow] = useState("");
   const [customQuery, setCustomQuery] = useState("");
+  // Execution mode: 'online' uses GPT-4.1 (OpenAI), 'offline' uses local Llama model
+  const [executionMode, setExecutionMode] = useState<string>("online");
+  const [today, setToday] = useState<string>("");
 
   const containerRef = useRef<HTMLDivElement>(null);
   const projectRef = useRef<HTMLDivElement>(null);
   const workflowRef = useRef<HTMLDivElement>(null);
+
+  // Set date on client side to avoid hydration mismatch
+  useEffect(() => {
+    setToday(new Date().toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    }));
+  }, []);
 
   const navItems = [
     { id: "home", label: "Home", icon: "🏠" },
@@ -268,7 +278,7 @@ export default function WorkspacePage() {
     }
   };
 
-  const handleCustomWorkflow = () => {
+  const handleCustomWorkflow = async () => {
     if (!customQuery.trim()) return;
     
     const { overlay, style } = createPopup(
@@ -277,13 +287,104 @@ export default function WorkspacePage() {
       'executing'
     );
 
-    setTimeout(() => {
+    try {
+      console.log('Starting workflow execution...', { query: customQuery });
+      
+      // Start workflow execution
+      const modelToSend = executionMode === "online" ? "gpt-4.1" : "llama-3.3-70b-versatile";
+
+      const executeResponse = await fetch('http://localhost:8000/api/v1/workflow/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          query: customQuery,
+          model: modelToSend
+        })
+      });
+
+      console.log('Execute response status:', executeResponse.status);
+
+      if (!executeResponse.ok) {
+        const errorText = await executeResponse.text();
+        console.error('Execute response error:', errorText);
+        throw new Error(`Failed to start workflow: ${executeResponse.status} - ${errorText}`);
+      }
+
+      const executeData = await executeResponse.json();
+      const workflowId = executeData.workflow_id;
+
+      // Poll for workflow status
+      const checkStatus = async (): Promise<boolean> => {
+        try {
+          const statusResponse = await fetch(`http://localhost:8000/api/v1/workflow/${workflowId}/status`, {
+            headers: {
+              'Accept': 'application/json',
+            }
+          });
+          
+          if (!statusResponse.ok) {
+            const errorText = await statusResponse.text();
+            console.error('Status response error:', errorText);
+            throw new Error(`Failed to get status: ${statusResponse.status} - ${errorText}`);
+          }
+
+          const statusData = await statusResponse.json();
+          console.log('Workflow status:', statusData);
+          
+          if (statusData.status === 'completed') {
+            closePopup(overlay, style);
+            setTimeout(() => {
+              showNotification('✅ Workflow successfully executed!');
+              setCustomQuery("");
+            }, 500);
+            return true;
+          } else if (statusData.status === 'failed') {
+            throw new Error(statusData.message || 'Workflow execution failed');
+          } else if (statusData.status === 'cancelled') {
+            throw new Error('Workflow was cancelled');
+          }
+          
+          // Still running, check again in 2 seconds
+          return false;
+        } catch (error) {
+          console.error('Error checking workflow status:', error);
+          throw error;
+        }
+      };
+
+      // Poll every 2 seconds for up to 5 minutes
+      const maxAttempts = 150; // 5 minutes with 2-second intervals
+      let attempts = 0;
+      
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        
+        try {
+          const isComplete = await checkStatus();
+          
+          if (isComplete || attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            
+            if (attempts >= maxAttempts) {
+              throw new Error('Workflow timeout - taking too long to complete');
+            }
+          }
+        } catch (error) {
+          clearInterval(pollInterval);
+          throw error;
+        }
+      }, 2000);
+
+    } catch (error) {
+      console.error('Workflow execution error:', error);
       closePopup(overlay, style);
       setTimeout(() => {
-        showNotification('✅ Custom workflow executed successfully!');
-        setCustomQuery("");
+        showNotification(`❌ Workflow failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'info');
       }, 500);
-    }, 4000);
+    }
   };
 
   const handleNavigation = (navId: string) => {
@@ -360,7 +461,7 @@ export default function WorkspacePage() {
                 Workspace Dashboard
               </h2>
               <div className="text-sm text-muted-foreground font-medium">
-                {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                {today}
               </div>
             </div>
             
@@ -564,6 +665,16 @@ export default function WorkspacePage() {
                     className="w-full px-6 py-4 rounded-xl border-2 bg-background/50 backdrop-blur-sm focus:outline-none focus:ring-4 focus:ring-purple-500/30 focus:border-purple-500 resize-none transition-all"
                   />
                   
+                  {/* Execution mode selection: Online (GPT-4.1) vs Offline (local Llama) */}
+                  <select
+                    value={executionMode}
+                    onChange={(e) => setExecutionMode(e.target.value)}
+                    className="w-full px-6 py-4 rounded-xl border-2 bg-background/50 backdrop-blur-sm focus:outline-none focus:ring-4 focus:ring-purple-500/30 focus:border-purple-500 transition-all"
+                  >
+                    <option value="online">Online</option>
+                    <option value="offline">Offline</option>
+                  </select>
+
                   <div className="text-xs text-muted-foreground mb-3 flex items-center gap-2">
                     <span>💡</span>
                     <span>Be specific about what you want to achieve for best results</span>
