@@ -1,0 +1,50 @@
+{
+  "metadata": {
+    "session_name": "frontend_test",
+    "created_at": "2025-07-08T15:21:48.928565"
+  },
+  "steps": [
+    {
+      "name": "Step 1",
+      "description": "Automated action sequence 1",
+      "actions": [
+        {
+          "id": "action_1",
+          "type": "click",
+          "location": [
+            925.16015625,
+            73.9921875
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_2",
+          "type": "click",
+          "location": [
+            807.96875,
+            61.875
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_3",
+          "type": "click",
+          "location": [
+            1060.30078125,
+            54.72265625
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_4",
+          "type": "click",
+          "location": [
+            784.51171875,
+            645.94140625
+          ],
+          "button": "left"
+        }
+      ]
+    }
+  ]
+}

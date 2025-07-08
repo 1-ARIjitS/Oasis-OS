@@ -1,0 +1,9 @@
+Speech Transcript - test_new
+Started: 2025-07-08 15:19:53
+----------------------------------------
+
+[7.31s] Thank you.
+
+----------------------------------------
+Session ended: 2025-07-08 15:20:03
+Total voice commands: 1

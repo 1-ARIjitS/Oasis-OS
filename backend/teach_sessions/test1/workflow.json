@@ -1,0 +1,192 @@
+{
+  "metadata": {
+    "session_name": "test1",
+    "created_at": "2025-07-08T14:55:16.006279"
+  },
+  "steps": [
+    {
+      "name": "Step 1",
+      "description": "Automated action sequence 1",
+      "actions": [
+        {
+          "id": "action_1",
+          "type": "click",
+          "location": [
+            1406.39453125,
+            49.91796875
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_2",
+          "type": "type",
+          "text": "g"
+        },
+        {
+          "id": "action_3",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_4",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_5",
+          "type": "type",
+          "text": "g"
+        },
+        {
+          "id": "action_6",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_7",
+          "type": "type",
+          "text": "e"
+        },
+        {
+          "id": "action_8",
+          "type": "type",
+          "text": "."
+        },
+        {
+          "id": "action_9",
+          "type": "type",
+          "text": "c"
+        },
+        {
+          "id": "action_10",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_11",
+          "type": "type",
+          "text": "m"
+        },
+        {
+          "id": "action_12",
+          "type": "key_press",
+          "key": "enter"
+        },
+        {
+          "id": "action_13",
+          "type": "type",
+          "text": "h"
+        },
+        {
+          "id": "action_14",
+          "type": "type",
+          "text": "e"
+        },
+        {
+          "id": "action_15",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_16",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_17",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_18",
+          "type": "key_press",
+          "key": "space"
+        },
+        {
+          "id": "action_19",
+          "type": "type",
+          "text": "w"
+        },
+        {
+          "id": "action_20",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_21",
+          "type": "type",
+          "text": "r"
+        },
+        {
+          "id": "action_22",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_23",
+          "type": "type",
+          "text": "d"
+        },
+        {
+          "id": "action_24",
+          "type": "key_press",
+          "key": "enter"
+        }
+      ]
+    },
+    {
+      "name": "Step 2",
+      "description": "Automated action sequence 2",
+      "actions": [
+        {
+          "id": "action_25",
+          "type": "click",
+          "location": [
+            1370.31640625,
+            61.04296875
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 3",
+      "description": "Automated action sequence 3",
+      "actions": [
+        {
+          "id": "action_26",
+          "type": "click",
+          "location": [
+            490.12890625,
+            621.875
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 4",
+      "description": "Automated action sequence 4",
+      "actions": [
+        {
+          "id": "action_27",
+          "type": "click",
+          "location": [
+            1387.4921875,
+            607.53515625
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_28",
+          "type": "click",
+          "location": [
+            701.77734375,
+            730.6640625
+          ],
+          "button": "left"
+        }
+      ]
+    }
+  ]
+}

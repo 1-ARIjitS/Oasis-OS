@@ -1,0 +1,707 @@
+{
+  "metadata": {
+    "session_name": "basic",
+    "created_at": "2025-07-08T03:52:21.199336"
+  },
+  "steps": [
+    {
+      "name": "Step 1",
+      "description": "Automated action sequence 1",
+      "actions": [
+        {
+          "id": "action_1",
+          "type": "click",
+          "location": [
+            672,
+            1166
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_2",
+          "type": "type",
+          "text": "w"
+        },
+        {
+          "id": "action_3",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_4",
+          "type": "type",
+          "text": "r"
+        },
+        {
+          "id": "action_5",
+          "type": "type",
+          "text": "d"
+        },
+        {
+          "id": "action_6",
+          "type": "key_press",
+          "key": "enter"
+        }
+      ]
+    },
+    {
+      "name": "Step 2",
+      "description": "Automated action sequence 2",
+      "actions": [
+        {
+          "id": "action_7",
+          "type": "voice_command",
+          "text": "in the search bar to open word",
+          "timestamp": 9.311631202697754
+        }
+      ]
+    },
+    {
+      "name": "Step 3",
+      "description": "Automated action sequence 3",
+      "actions": [
+        {
+          "id": "action_8",
+          "type": "click",
+          "location": [
+            378,
+            804
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 4",
+      "description": "Automated action sequence 4",
+      "actions": [
+        {
+          "id": "action_9",
+          "type": "voice_command",
+          "text": "We will open the feedback document demo.",
+          "timestamp": 14.165672302246094
+        }
+      ]
+    },
+    {
+      "name": "Step 5",
+      "description": "Automated action sequence 5",
+      "actions": [
+        {
+          "id": "action_10",
+          "type": "click",
+          "location": [
+            516,
+            1174
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_11",
+          "type": "type",
+          "text": "p"
+        },
+        {
+          "id": "action_12",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_13",
+          "type": "type",
+          "text": "w"
+        },
+        {
+          "id": "action_14",
+          "type": "type",
+          "text": "e"
+        },
+        {
+          "id": "action_15",
+          "type": "type",
+          "text": "r"
+        }
+      ]
+    },
+    {
+      "name": "Step 6",
+      "description": "Automated action sequence 6",
+      "actions": [
+        {
+          "id": "action_16",
+          "type": "voice_command",
+          "text": "This is the feedback that we need to implement in the PowerPoint. Next we will go back to the search bar and then type power. So it's enough.",
+          "timestamp": 25.315946578979492
+        },
+        {
+          "id": "action_17",
+          "type": "key_press",
+          "key": "enter"
+        }
+      ]
+    },
+    {
+      "name": "Step 7",
+      "description": "Automated action sequence 7",
+      "actions": [
+        {
+          "id": "action_18",
+          "type": "click",
+          "location": [
+            331,
+            785
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 8",
+      "description": "Automated action sequence 8",
+      "actions": [
+        {
+          "id": "action_19",
+          "type": "voice_command",
+          "text": "the presentation demo",
+          "timestamp": 32.86759543418884
+        }
+      ]
+    },
+    {
+      "name": "Step 9",
+      "description": "Automated action sequence 9",
+      "actions": [
+        {
+          "id": "action_20",
+          "type": "click",
+          "location": [
+            1384,
+            1183
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 10",
+      "description": "Automated action sequence 10",
+      "actions": [
+        {
+          "id": "action_21",
+          "type": "click",
+          "location": [
+            1471,
+            1171
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_22",
+          "type": "voice_command",
+          "text": "change was",
+          "timestamp": 39.18153357505798
+        },
+        {
+          "id": "action_23",
+          "type": "click",
+          "location": [
+            1065,
+            608
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_24",
+          "type": "click",
+          "location": [
+            1065,
+            608
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_25",
+          "type": "click",
+          "location": [
+            1065,
+            608
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_26",
+          "type": "voice_command",
+          "text": "to hello world.",
+          "timestamp": 42.21717667579651
+        }
+      ]
+    },
+    {
+      "name": "Step 11",
+      "description": "Automated action sequence 11",
+      "actions": [
+        {
+          "id": "action_27",
+          "type": "click",
+          "location": [
+            1349,
+            615
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_28",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_29",
+          "type": "voice_command",
+          "text": "dummy text",
+          "timestamp": 45.698166847229004
+        },
+        {
+          "id": "action_30",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_31",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_32",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_33",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_34",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_35",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_36",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_37",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_38",
+          "type": "key_press",
+          "key": "backspace"
+        },
+        {
+          "id": "action_39",
+          "type": "type",
+          "text": "h"
+        },
+        {
+          "id": "action_40",
+          "type": "type",
+          "text": "e"
+        },
+        {
+          "id": "action_41",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_42",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_43",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_44",
+          "type": "key_press",
+          "key": "space"
+        },
+        {
+          "id": "action_45",
+          "type": "voice_command",
+          "text": "space dummy text.",
+          "timestamp": 50.175748109817505
+        },
+        {
+          "id": "action_46",
+          "type": "type",
+          "text": "w"
+        },
+        {
+          "id": "action_47",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_48",
+          "type": "type",
+          "text": "r"
+        },
+        {
+          "id": "action_49",
+          "type": "type",
+          "text": "l"
+        },
+        {
+          "id": "action_50",
+          "type": "type",
+          "text": "d"
+        }
+      ]
+    },
+    {
+      "name": "Step 12",
+      "description": "Automated action sequence 12",
+      "actions": [
+        {
+          "id": "action_51",
+          "type": "click",
+          "location": [
+            1099,
+            781
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 13",
+      "description": "Automated action sequence 13",
+      "actions": [
+        {
+          "id": "action_52",
+          "type": "click",
+          "location": [
+            1099,
+            781
+          ],
+          "button": "right"
+        },
+        {
+          "id": "action_53",
+          "type": "voice_command",
+          "text": "color of the shape you click on it",
+          "timestamp": 57.786360025405884
+        }
+      ]
+    },
+    {
+      "name": "Step 14",
+      "description": "Automated action sequence 14",
+      "actions": [
+        {
+          "id": "action_54",
+          "type": "click",
+          "location": [
+            1210,
+            1058
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 15",
+      "description": "Automated action sequence 15",
+      "actions": [
+        {
+          "id": "action_55",
+          "type": "click",
+          "location": [
+            1524,
+            516
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_56",
+          "type": "voice_command",
+          "text": "right click, click format shape, click",
+          "timestamp": 63.362309217453
+        }
+      ]
+    },
+    {
+      "name": "Step 16",
+      "description": "Automated action sequence 16",
+      "actions": [
+        {
+          "id": "action_57",
+          "type": "click",
+          "location": [
+            1838,
+            789
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 17",
+      "description": "Automated action sequence 17",
+      "actions": [
+        {
+          "id": "action_58",
+          "type": "voice_command",
+          "text": "then click this color icon and choose the",
+          "timestamp": 68.58122444152832
+        }
+      ]
+    },
+    {
+      "name": "Step 18",
+      "description": "Automated action sequence 18",
+      "actions": [
+        {
+          "id": "action_59",
+          "type": "click",
+          "location": [
+            1719,
+            656
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 19",
+      "description": "Automated action sequence 19",
+      "actions": [
+        {
+          "id": "action_60",
+          "type": "click",
+          "location": [
+            1477,
+            939
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 20",
+      "description": "Automated action sequence 20",
+      "actions": [
+        {
+          "id": "action_61",
+          "type": "voice_command",
+          "text": "example green. Then to go to the next slide you click this down arrow.",
+          "timestamp": 77.56220626831055
+        }
+      ]
+    },
+    {
+      "name": "Step 21",
+      "description": "Automated action sequence 21",
+      "actions": [
+        {
+          "id": "action_62",
+          "type": "click",
+          "location": [
+            873,
+            665
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 22",
+      "description": "Automated action sequence 22",
+      "actions": [
+        {
+          "id": "action_63",
+          "type": "click",
+          "location": [
+            873,
+            665
+          ],
+          "button": "right"
+        },
+        {
+          "id": "action_64",
+          "type": "voice_command",
+          "text": "photo, you click on the image",
+          "timestamp": 81.91049313545227
+        }
+      ]
+    },
+    {
+      "name": "Step 23",
+      "description": "Automated action sequence 23",
+      "actions": [
+        {
+          "id": "action_65",
+          "type": "click",
+          "location": [
+            966,
+            615
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_66",
+          "type": "voice_command",
+          "text": "right click, click change",
+          "timestamp": 85.14231562614441
+        },
+        {
+          "id": "action_67",
+          "type": "click",
+          "location": [
+            1215,
+            597
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 24",
+      "description": "Automated action sequence 24",
+      "actions": [
+        {
+          "id": "action_68",
+          "type": "voice_command",
+          "text": "guys.",
+          "timestamp": 89.55128741264343
+        },
+        {
+          "id": "action_69",
+          "type": "click",
+          "location": [
+            131,
+            325
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 25",
+      "description": "Automated action sequence 25",
+      "actions": [
+        {
+          "id": "action_70",
+          "type": "click",
+          "location": [
+            694,
+            76
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_71",
+          "type": "type",
+          "text": "p"
+        },
+        {
+          "id": "action_72",
+          "type": "type",
+          "text": "h"
+        },
+        {
+          "id": "action_73",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_74",
+          "type": "type",
+          "text": "t"
+        },
+        {
+          "id": "action_75",
+          "type": "type",
+          "text": "o"
+        },
+        {
+          "id": "action_76",
+          "type": "voice_command",
+          "text": "then search for the picture that you want",
+          "timestamp": 95.27621483802795
+        },
+        {
+          "id": "action_77",
+          "type": "key_press",
+          "key": "enter"
+        }
+      ]
+    },
+    {
+      "name": "Step 26",
+      "description": "Automated action sequence 26",
+      "actions": [
+        {
+          "id": "action_78",
+          "type": "click",
+          "location": [
+            339,
+            289
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_79",
+          "type": "click",
+          "location": [
+            339,
+            289
+          ],
+          "button": "left"
+        }
+      ]
+    },
+    {
+      "name": "Step 27",
+      "description": "Automated action sequence 27",
+      "actions": [
+        {
+          "id": "action_80",
+          "type": "voice_command",
+          "text": "So I have photo and I will click the first result.",
+          "timestamp": 102.3479950428009
+        }
+      ]
+    },
+    {
+      "name": "Step 28",
+      "description": "Automated action sequence 28",
+      "actions": [
+        {
+          "id": "action_81",
+          "type": "click",
+          "location": [
+            1296,
+            1174
+          ],
+          "button": "left"
+        },
+        {
+          "id": "action_82",
+          "type": "key_press",
+          "key": "enter"
+        }
+      ]
+    }
+  ]
+}
