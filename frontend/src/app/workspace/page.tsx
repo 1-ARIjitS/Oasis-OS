@@ -86,6 +86,9 @@ const defaultWorkflows: Workflow[] = [
   { id: "calendar", name: "Calendar Sync", description: "Sync events across platforms", category: "Productivity" }
 ];
 
+// Backend API base URL. Use environment variable if available, otherwise default to localhost.
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+
 export default function WorkspacePage() {
   const [selectedNav, setSelectedNav] = useState("home");
   const [workflowName, setWorkflowName] = useState("");
@@ -239,42 +242,86 @@ export default function WorkspacePage() {
     }, 4000);
   };
 
-  const handleTeachWorkflow = () => {
+  const handleTeachWorkflow = async () => {
     if (!workflowName.trim()) return;
-    
-    const { overlay, popup, style } = createPopup(
-      'Recording Workflow',
-      'Voice and screen are being recorded. Complete your task and click pause when finished.',
-      'recording'
-    );
 
-    const pauseBtn = popup.querySelector('#pauseBtn') as HTMLButtonElement;
-    pauseBtn?.addEventListener('click', () => {
-      closePopup(overlay, style);
-      setTimeout(() => {
-        showNotification(`✅ Workflow "${workflowName}" saved successfully! Added to your Workflows tab.`);
-        setWorkflowName("");
-      }, 500);
-    });
-  };
+    try {
+      // Call backend to start recording
+      const res = await fetch(`${API_BASE}/start_recording/${encodeURIComponent(workflowName.trim())}`, {
+        method: "POST",
+      });
 
-  const handleExecuteWorkflow = () => {
-    if (!selectedWorkflow) return;
-    
-    const selectedWf = defaultWorkflows.find(wf => wf.id === selectedWorkflow);
-    if (selectedWf) {
-      const { overlay, style } = createPopup(
-        'Executing Workflow',
-        `Running "${selectedWf.name}" automation...`,
-        'executing'
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showNotification(`❌ Failed to start recording: ${err.detail ?? res.statusText}`, 'info');
+        return;
+      }
+
+      // Show recording popup
+      const { overlay, popup, style } = createPopup(
+        'Recording Workflow',
+        'Voice and screen are being recorded. Complete your task and click pause when finished.',
+        'recording'
       );
 
-      setTimeout(() => {
+      const pauseBtn = popup.querySelector('#pauseBtn') as HTMLButtonElement;
+      pauseBtn?.addEventListener('click', async () => {
+        pauseBtn.disabled = true;
+        pauseBtn.textContent = '⏳ Stopping...';
+
+        try {
+          const stopRes = await fetch(`${API_BASE}/stop_recording`, { method: 'POST' });
+          if (!stopRes.ok) {
+            const err = await stopRes.json().catch(() => ({}));
+            showNotification(`❌ Failed to stop recording: ${err.detail ?? stopRes.statusText}`, 'info');
+            pauseBtn.disabled = false;
+            pauseBtn.textContent = '⏸️ Pause Recording';
+            return;
+          }
+          closePopup(overlay, style);
+          setTimeout(() => {
+            showNotification(`✅ Workflow "${workflowName}" saved successfully! Added to your Workflows tab.`);
+            setWorkflowName("");
+          }, 500);
+        } catch (err) {
+          console.error(err);
+          showNotification('❌ Error communicating with backend', 'info');
+        }
+      });
+    } catch (err) {
+      console.error(err);
+      showNotification('❌ Error communicating with backend', 'info');
+    }
+  };
+
+  const handleExecuteWorkflow = async () => {
+    if (!selectedWorkflow) return;
+
+    const selectedWf = defaultWorkflows.find((wf) => wf.id === selectedWorkflow);
+    if (!selectedWf) return;
+
+    // Show executing popup immediately
+    const { overlay, style } = createPopup(
+      'Executing Workflow',
+      `Running "${selectedWf.name}" automation...`,
+      'executing'
+    );
+
+    try {
+      const res = await fetch(`${API_BASE}/run_workflow/complex`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
         closePopup(overlay, style);
-        setTimeout(() => {
-          showNotification(`✅ Workflow "${selectedWf.name}" executed successfully!`);
-        }, 500);
-      }, 3000);
+        showNotification(`❌ Workflow execution failed: ${err.detail ?? res.statusText}`, 'info');
+        return;
+      }
+      // After backend confirms completion, close popup and notify
+      closePopup(overlay, style);
+      showNotification(`✅ Workflow "${selectedWf.name}" executed successfully!`);
+    } catch (err) {
+      console.error(err);
+      closePopup(overlay, style);
+      showNotification('❌ Error communicating with backend', 'info');
     }
   };
 
