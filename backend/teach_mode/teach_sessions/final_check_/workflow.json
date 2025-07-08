@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "session_name": "final_check_",
+    "created_at": "2025-07-08T15:30:40.290013"
+  },
+  "steps": [
+    {
+      "name": "Step 1",
+      "description": "Automated action sequence 1",
+      "actions": [
+        {
+          "id": "action_1",
+          "type": "click",
+          "location": [
+            757.49609375,
+            654.5859375
+          ],
+          "button": "left"
+        }
+      ]
+    }
+  ]
+}

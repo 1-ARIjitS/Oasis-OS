@@ -119,5 +119,4 @@ def run_workflow_endpoint(session_name: str):
 # Uvicorn entry-point
 # ---------------------------
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Entry point moved to start.py for unified startup with dependency management

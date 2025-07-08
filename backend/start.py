@@ -46,11 +46,11 @@ def main():
     print("-" * 40)
     
     try:
-        from main import app
+        from server import app
         import uvicorn
         
         uvicorn.run(
-            "main:app",
+            "server:app",
             host="0.0.0.0",
             port=8000,
             reload=True,

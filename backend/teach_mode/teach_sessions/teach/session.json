@@ -1,0 +1,23 @@
+{
+  "mouse_events": [],
+  "key_events": [],
+  "voice_commands": [],
+  "frames": [
+    {
+      "time": 0.5187649726867676,
+      "path": "/Users/qasim.khan/Documents/raise/Oasis-Final/Oasis-OS/backend/teach_mode/teach_sessions/teach/frame_00000.png"
+    },
+    {
+      "time": 1.1074059009552002,
+      "path": "/Users/qasim.khan/Documents/raise/Oasis-Final/Oasis-OS/backend/teach_mode/teach_sessions/teach/frame_00001.png"
+    }
+  ],
+  "start_time": 1751981794.817033,
+  "end_time": 1751981799.3017259,
+  "speech_enabled": true,
+  "speech_settings": {
+    "vad_threshold": 0.01,
+    "silence_duration": 2.0,
+    "sample_rate": 16000
+  }
+}
