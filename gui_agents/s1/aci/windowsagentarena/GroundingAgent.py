@@ -3,7 +3,7 @@ import logging
 import os
 import time
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 import requests
 from gui_agents.s1.utils.common_utils import box_iou
@@ -23,295 +23,392 @@ def agent_action(func):
 
 class GroundingAgent:
     def __init__(self, vm_version: str, top_app=None, top_app_only=True, ocr=True):
-        self.active_apps = set()
+        self.vm_version = vm_version
         self.top_app = top_app
-        self.top_app_only = (
-            top_app_only  # Only include top app in the accessibility tree
-        )
-        self.ocr = ocr
-        self.index_out_of_range_flag = False
-        self.app_setup_code = f"""import subprocess;
-import difflib;
-import pyautogui;
-pyautogui.press('escape');
-time.sleep(0.5);
-output = subprocess.check_output(['wmctrl', '-lx']);
-output = output.decode('utf-8').splitlines();
-window_titles = [line.split(None, 4)[2] for line in output];
-closest_matches = difflib.get_close_matches('APP_NAME', window_titles, n=1, cutoff=0.1);
-if closest_matches:
-    closest_match = closest_matches[0];
-    for line in output:
-        if closest_match in line:
-            window_id = line.split()[0]
-            break;
-subprocess.run(['wmctrl', '-ia', window_id])
-subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_horz'])
-"""
-
-        self.top_active_app = None
+        self.top_app_only = top_app_only
+        self.enable_ocr = ocr
         self.notes = []
-        self.clipboard = ""
 
-        # TODO: this is terrible, fix this
-        # global state_ns, component_ns, attributes_ns, value_ns
-        # if vm_version == "old":
-        #     state_ns = "uri:deskat:state.at-spi.gnome.org"
-        #     component_ns = "uri:deskat:component.at-spi.gnome.org"
-        # elif vm_version == 'win':
-        #     state_ns = "uri:deskat:state.at-spi.gnome.org"
-        #     component_ns = "uri:deskat:component.at-spi.gnome.org"
-        # else:
-        #     attributes_ns = "https://accessibility.windows.example.org/ns/attributes"
-        #     state_ns = "https://accessibility.ubuntu.example.org/ns/state"
-        #     component_ns = "https://accessibility.ubuntu.example.org/ns/component"
-        #     value_ns = "https://accessibility.ubuntu.example.org/ns/value"
+        # Map of applications to ignore
+        self.ignore_applications = {
+            "kwin_x11",
+            "kwin",
+            "kscreenlocker_greet",
+            "plasmashell",
+            "kwin_wayland",
+            "systemsettings",
+            "kstart5",
+        }
+
+        # Preserve nodes for element lookup
+        self.nodes = []
+        # Handle potential error conditions
+        self.index_out_of_range_flag = False
+
+        # state of the system
+        self.previous_obs = None
+
+        # OCR
+        self.similarity_threshold = 0.8
+        self.all_elements_from_desktop = []
+        self.all_elements_from_ocr = []
+
+        # preserved elements for current round
+        self.preserved_elements = []
+
+        # text_linearization_length
+        self.text_linearization_length = 3000
+
+        # linearized_accessibility_tree
+        self.linearized_accessibility_tree = ""
+
+        # screenshot of current step
+        self.screenshot = None
+
+        # track if any applications opened/closed from previous round
+        self.same_application_configuration = True
 
     def get_current_applications(self, obs):
-        tree = ET.ElementTree(ET.fromstring(obs["accessibility_tree"]))
-        apps = []
+        """Get list of current applications from the accessibility tree"""
+        tree = obs.get("accessibility_tree")
+        if tree is None:
+            return []
+        
         root = tree.getroot()
+        if root is None:
+            return []
+            
+        apps = []
         for item in root:
-            apps.append(item.get("name", "").replace("\\", ""))
+            app_name = item.get("name", "").replace("\\", "")
+            if app_name:
+                apps.append(app_name)
         return apps
 
     def check_new_apps(self, old_apps, new_apps):
-        return new_apps - old_apps
+        return set(old_apps) != set(new_apps)
 
     def find_active_applications(self, tree):
         # names of applications to keep TODO: soffice is a single application with all the isntances like impress, calc etc. being frames this will need to be dealt with separately
-        to_keep = ["Program Manager"]
-        apps_with_active_tag = []
-        for application in list(tree.getroot()):
-            app_name = application.get("name")
-            for frame in application:
-                is_active = frame.attrib.get("{{{:}}}active".format(state_ns), "false")
-                if is_active == "true":
-                    apps_with_active_tag.append(app_name)
-        print(apps_with_active_tag)
-        if apps_with_active_tag:
-            to_keep.append(apps_with_active_tag[-1])
+        if tree is None:
+            return []
+            
+        root = tree.getroot()
+        if root is None:
+            return []
+            
+        to_keep = []
+        for application in root:
+            if (
+                application.attrib.get("name", "") not in self.ignore_applications
+                and application.attrib.get("name", "") != ""
+            ):
+                to_keep.append(application.attrib.get("name", ""))
+
         return to_keep
 
     def filter_active_app(self, tree):
-        for application in list(tree.getroot()):
-            app_name = application.attrib.get("name")
-            for frame in application:
-                is_active = frame.attrib.get("{{{:}}}active".format(state_ns), "false")
-                if is_active == "true":
-                    return app_name
-        return None
+        """Filter the tree to only keep the top app if top_app_only is True"""
+        if not self.top_app_only or self.top_app is None or tree is None:
+            return tree
+            
+        root = tree.getroot()
+        if root is None:
+            return tree
+            
+        # Remove all applications except the top app
+        for application in list(root):
+            if application.attrib.get("name", "") != self.top_app:
+                root.remove(application)
+        return tree
 
     def filter_nodes(self, tree, show_all=False):
         # created and populate a preserved nodes list which filters out unnecessary elements and keeps only those elements which are currently showing on the screen
         # TODO: include offscreen elements and then scroll to them before clicking
+        if tree is None:
+            return []
+            
+        root = tree.getroot()
+        if root is None:
+            return []
+            
         preserved_nodes = []
-        exclude_tags = ["panel", "window", "filler", "frame", "separator", "scroll-bar"]
 
-        for node in tree.iter():
-            if node.tag not in exclude_tags:
-                if show_all:
-                    if node.attrib.get(f"{{{state_ns}}}enabled") == "true":
-                        coords: Tuple[int, int] = eval(
-                            node.get(
-                                "{{{:}}}screencoord".format(component_ns), "(-1, -1)"
-                            )
-                        )
-                        if coords[0] >= 0 and coords[1] >= 0:
-                            preserved_nodes.append(node)
-                # if show_all is false, only show elements that are currently showing on screen
-                else:
-                    if node.attrib.get(f"{{{state_ns}}}visible") == "true":
-                        coords: Tuple[int, int] = eval(
-                            node.get(
-                                "{{{:}}}screencoord".format(component_ns), "(-1, -1)"
-                            )
-                        )
+        # TODO: a more optimal implementation
+        for node in root.iter():
+            # skip if the node doesn't have the necessary attributes
+            if not all(
+                key in node.attrib
+                for key in [
+                    f"{{{state_ns}}}enabled",
+                    f"{{{component_ns}}}screencoord",
+                    f"{{{component_ns}}}size",
+                ]
+            ):
+                continue
 
-                        if coords[0] >= 0 and coords[1] >= 0:
-                            preserved_nodes.append(node)
+            if show_all:
+                if node.attrib.get(f"{{{state_ns}}}enabled") == "true":
+                    screen_coords: Tuple[int, int] = eval(
+                        node.get(
+                            "{{{:}}}screencoord".format(component_ns), "(-1, -1)"
+                        )
+                    )
+                    # TODO: double check the implementation
+                    size: Tuple[int, int] = eval(
+                        node.get("{{{:}}}size".format(component_ns), "(-1, -1)")
+                    )
+
+                    if (
+                        screen_coords != (-1, -1)
+                        and size != (-1, -1)
+                        and screen_coords[0] >= 0
+                        and screen_coords[1] >= 0
+                        and size[0] > 0
+                        and size[1] > 0
+                        and screen_coords[0] + size[0] <= 1920
+                        and screen_coords[1] + size[1] <= 1080
+                    ):
+                        preserved_nodes.append(node)
+            else:
+                # Check if the node is a clickable element (button, text field, etc.)
+                if (
+                    node.attrib.get(f"{{{state_ns}}}enabled") == "true"
+                    and node.attrib.get(f"{{{state_ns}}}visible") == "true"
+                    and node.attrib.get(f"{{{state_ns}}}showing") == "true"
+                    and node.attrib.get("role") in clickable_roles
+                ):
+                    preserved_nodes.append(node)
+
         return preserved_nodes
 
     def linearize_tree(self, preserved_nodes):
         # TODO: Run an ablation to check if class and desc
         # linearized_accessibility_tree = ["id\ttag\tname\ttext\tclass\tdescription"]
         linearized_accessibility_tree = ["id\ttag\tname\ttext"]
+
         for idx, node in enumerate(preserved_nodes):
-            if node.text:
-                text = (
-                    node.text
-                    if '"' not in node.text
-                    else '"{:}"'.format(node.text.replace('"', '""'))
-                )
-            else:
-                text = '""'
+            # Extract node information
+            role = node.attrib.get("role", "")
+            name = node.attrib.get("name", "").replace("\n", " ").replace("\t", " ")
+            text = node.text if node.text else ""
+            text = text.replace("\n", " ").replace("\t", " ") if text else ""
 
-            linearized_accessibility_tree.append(
-                "{:}\t{:}\t{:}\t{:}".format(
-                    idx,
-                    node.tag,
-                    node.get("name", ""),
-                    text,
-                    # node.get("{{{:}}}class".format(attributes_ns), ""),
-                    # node.get("{{{:}}}description".format(attributes_ns), ""),
-                )
-            )
+            # class_name = node.attrib.get("class", "")
+            # description = node.attrib.get("description", "")
 
-        # returning list of linearized elements
-        return linearized_accessibility_tree
+            # Create linearized entry
+            linearized_entry = f"{idx}\t{role}\t{name}\t{text}"
+            linearized_accessibility_tree.append(linearized_entry)
+
+        return "\n".join(linearized_accessibility_tree)
 
     def extract_elements_from_screenshot(self, screenshot) -> Dict:
-        """Uses paddle-ocr to extract elements with text from the screenshot. The elements will be added to the linearized accessibility tree downstream"""
-
-        # Convert screenshot to PIL image
-        def send_image_to_ocr(screenshot) -> Dict:
-
-            # url = os.environ.get("OCR_SERVER_ADDRESS", "")
-            url = "http://127.0.0.1:8083/ocr/"
-            if url == "":
-                raise Exception("OCR SERVER ADDRESS NOT SET")
-            encoded_screenshot = base64.b64encode(screenshot).decode("utf-8")
-            data = {"img_bytes": encoded_screenshot}
-            response = requests.post(url, json=data)
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {
-                    "error": f"Request failed with status code {response.status_code}",
-                    "results": [],
+        """Extract text elements from screenshot using OCR"""
+        try:
+            url = os.environ.get("OCR_SERVER_ADDRESS")
+            
+            if not url:
+                print("Warning: OCR_SERVER_ADDRESS not set. OCR functionality will be disabled.")
+                return {"error": "OCR SERVER ADDRESS NOT SET", "results": []}
+                
+            def send_image_to_ocr(screenshot) -> Dict:
+                headers = {"Content-Type": "application/json"}
+                data = {
+                    "image": base64.b64encode(screenshot).decode("utf-8"),
+                    "ocr_type": "paddle"
                 }
+                
+                try:
+                    response = requests.post(url, json=data, headers=headers, timeout=30)
+                    response.raise_for_status()
+                    return response.json()
+                except requests.exceptions.ConnectionError:
+                    print(f"Error: Cannot connect to OCR server at {url}")
+                    return {"error": "Cannot connect to OCR server", "results": []}
+                except requests.exceptions.Timeout:
+                    print("Error: OCR server request timed out after 30 seconds.")
+                    return {"error": "OCR server request timed out", "results": []}
+                except requests.exceptions.HTTPError as e:
+                    print(f"Error: OCR server returned HTTP error: {e}")
+                    return {"error": f"OCR server returned HTTP error: {e}", "results": []}
+                except Exception as e:
+                    print(f"Error: Unexpected error with OCR server: {e}")
+                    return {"error": f"Unexpected error with OCR server: {e}", "results": []}
 
-        return send_image_to_ocr(screenshot)["results"]
+            return send_image_to_ocr(screenshot)
+            
+        except Exception as e:
+            print(f"Error in extract_elements_from_screenshot: {e}")
+            return {"error": str(e), "results": []}
 
     def add_ocr_elements(
         self, screenshot, linearized_accessibility_tree, preserved_nodes
     ):
         # Get the bounding boxes of the elements in the linearized accessibility tree
-        tree_bboxes = []
-        for node in preserved_nodes:
-            coordinates: Tuple[int, int] = eval(
-                node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)")
-            )
-            sizes: Tuple[int, int] = eval(
-                node.get("{{{:}}}size".format(component_ns), "(-1, -1)")
-            )
-            tree_bboxes.append(
+        if preserved_nodes:
+            tree_bboxes = np.array(
                 [
-                    coordinates[0],
-                    coordinates[1],
-                    coordinates[0] + sizes[0],
-                    coordinates[1] + sizes[1],
-                ]
+                    [
+                        int(node.get(f"{{{component_ns}}}screencoord", "(0,0)").strip("()").split(",")[0]),
+                        int(node.get(f"{{{component_ns}}}screencoord", "(0,0)").strip("()").split(",")[1]),
+                        int(node.get(f"{{{component_ns}}}screencoord", "(0,0)").strip("()").split(",")[0]) + 
+                        int(node.get(f"{{{component_ns}}}size", "(0,0)").strip("()").split(",")[0]),
+                        int(node.get(f"{{{component_ns}}}screencoord", "(0,0)").strip("()").split(",")[1]) + 
+                        int(node.get(f"{{{component_ns}}}size", "(0,0)").strip("()").split(",")[1])
+                    ]
+                    for node in preserved_nodes
+                    if node.get(f"{{{component_ns}}}screencoord") and node.get(f"{{{component_ns}}}size")
+                ],
+                dtype=np.float32,
             )
-
-        # Use OCR to found boxes that might be missing from the accessibility tree
-        try:
-            ocr_bboxes = self.extract_elements_from_screenshot(screenshot)
-        except Exception as e:
-            print(f"Error: {e}")
-            ocr_bboxes = []
         else:
-            # Check for intersection over union between the existing atree bounding boxes and the ocr bounding boxes, if ocr bounding boxes are new add them to the linearized accesibility tree
-            if (
-                len(ocr_bboxes) > 0
-            ):  # Only check IOUs and add if there are any bounding boxes returned by the ocr module
-                preserved_nodes_index = len(preserved_nodes)
-                for ind, (i, content, box) in enumerate(ocr_bboxes):
-                    # x1, y1, x2, y2 = int(box.get('left', 0)), int(box['top']), int(), int(box['bottom'])
-                    (
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                    ) = (
+            tree_bboxes = np.empty((0, 4), dtype=np.float32)
+
+        try:
+            ocr_results = self.extract_elements_from_screenshot(screenshot)
+            if "error" in ocr_results:
+                print(f"OCR Error: {ocr_results['error']}")
+                return linearized_accessibility_tree.split("\n"), preserved_nodes
+                
+            if "results" not in ocr_results or not ocr_results["results"]:
+                return linearized_accessibility_tree.split("\n"), preserved_nodes
+
+            preserved_nodes_index = len(preserved_nodes)
+            linearized_lines = linearized_accessibility_tree.split("\n")
+
+            # Convert OCR boxes to numpy array
+            ocr_boxes_array = np.array(
+                [
+                    [
                         int(box.get("left", 0)),
                         int(box.get("top", 0)),
                         int(box.get("right", 0)),
                         int(box.get("bottom", 0)),
+                    ]
+                    for _, _, box in ocr_results["results"]
+                    if box and all(k in box for k in ["left", "top", "right", "bottom"])
+                ],
+                dtype=np.float32,
+            )
+
+            if len(ocr_boxes_array) == 0:
+                return linearized_lines, preserved_nodes
+
+            # Calculate max IOUs efficiently
+            if len(tree_bboxes) > 0:
+                max_ious = box_iou(tree_bboxes, ocr_boxes_array).max(axis=0)
+            else:
+                max_ious = np.zeros(len(ocr_boxes_array))
+
+            # Process boxes with low IOU
+            for idx, ((_, content, box), max_iou) in enumerate(
+                zip(ocr_results["results"], max_ious)
+            ):
+                if max_iou < 0.1 and box and content:
+                    x1 = int(box.get("left", 0))
+                    y1 = int(box.get("top", 0))
+                    x2 = int(box.get("right", 0))
+                    y2 = int(box.get("bottom", 0))
+
+                    linearized_lines.append(
+                        f"{preserved_nodes_index}\tButton\t\t{content}"
                     )
-                    iou = box_iou(
-                        np.array(tree_bboxes, dtype=np.float32),
-                        np.array([[x1, y1, x2, y2]], dtype=np.float32),
-                    ).flatten()
 
-                    if max(iou) < 0.1:
-                        # Add the element to the linearized accessibility tree
-                        # TODO: ocr detected elements should be classified for their tag, currently set to push button for the agent to think they are interactable
-                        linearized_accessibility_tree.append(
-                            f"{preserved_nodes_index}\tpush-button\t\t{content}\t\t"
-                        )
+                    # Create a pseudo-node for OCR elements
+                    ocr_node = {
+                        "position": (x1, y1),
+                        "size": (x2 - x1, y2 - y1),
+                        "role": "Button",
+                        "name": "",
+                        "text": content,
+                    }
+                    preserved_nodes.append(ocr_node)
+                    preserved_nodes_index += 1
 
-                        # add to preserved node with the component_ns prefix node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)"
-                        node = ET.Element(
-                            "ocr_node",
-                            attrib={
-                                "text": content,
-                                "{{{}}}screencoord".format(
-                                    component_ns
-                                ): "({},{})".format(x1, y1),
-                                "{{{}}}size".format(component_ns): "({},{})".format(
-                                    x2 - x1, y2 - y1
-                                ),
-                            },
-                        )
-                        preserved_nodes.append(node)
-                        preserved_nodes_index += 1
+        except Exception as e:
+            print(f"Error in add_ocr_elements: {e}")
 
-        return linearized_accessibility_tree, preserved_nodes
+        return linearized_lines, preserved_nodes
 
     def linearize_and_annotate_tree(self, obs, show_all=False):
-        accessibility_tree = obs["accessibility_tree"]
-        screenshot = obs["screenshot"]
+        """Convert accessibility tree to linearized format with OCR elements"""
+        tree = obs.get("accessibility_tree")
+        if tree is None:
+            self.nodes = []
+            return ""
 
-        # convert the accessibility tree from a string representation to an xml tree
-        tree = ET.ElementTree(ET.fromstring(accessibility_tree))
-
-        # Get the applications to keep based on the active applications
+        # Filter to active applications
         to_keep = self.find_active_applications(tree)
-        self.top_app = to_keep[-1]
-
+        
         # Remove applications which are not included in the to_keep list
         if not show_all:
-            for application in list(tree.getroot()):
-                if application.attrib.get("name", "") not in to_keep:
-                    tree.getroot().remove(application)
+            root = tree.getroot()
+            if root is not None:
+                for application in list(root):
+                    if application.attrib.get("name", "") not in to_keep:
+                        root.remove(application)
 
         # Save tree for debugging
         # from datetime import datetime
-        # with open(f"tree_raw_{datetime.now()}.xml", "wb") as file:
-        #     tree.write(file, encoding="utf-8", xml_declaration=True)
+        # ET.dump(tree.getroot())
 
-        # Filter out filler elements and overlapping elements
+        # Filter to top app if specified
+        tree = self.filter_active_app(tree)
+
+        # Get preserved nodes
         preserved_nodes = self.filter_nodes(tree, show_all)
 
-        assert len(preserved_nodes) > 0
+        # Convert to linearized format
+        linearized_tree = self.linearize_tree(preserved_nodes)
 
-        # Linearize the tree as tsv
-        linearized_accessibility_tree = self.linearize_tree(preserved_nodes)
-
-        # Add OCR elements to the linearized accessibility tree to account for elements that are not in the accessibility tree
-        if self.ocr:
-            linearized_accessibility_tree, preserved_nodes = self.add_ocr_elements(
-                screenshot, linearized_accessibility_tree, preserved_nodes
+        # Add OCR elements if enabled
+        if self.enable_ocr and "screenshot" in obs:
+            linearized_lines, preserved_nodes = self.add_ocr_elements(
+                obs["screenshot"], linearized_tree, preserved_nodes
             )
+            linearized_tree = "\n".join(linearized_lines)
 
-        # Convert accessibility tree to a string
-        linearized_accessibility_tree = "\n".join(linearized_accessibility_tree)
-
-        # TODO: side-effect, set in separate functions
+        # Store for element lookup
         self.nodes = preserved_nodes
+        self.linearized_accessibility_tree = linearized_tree
 
-        return linearized_accessibility_tree
+        return linearized_tree
 
     def find_element(self, element_id):
+        """Find element by ID from preserved nodes"""
+        if not self.nodes:
+            print("No elements found in the accessibility tree.")
+            raise IndexError("No elements to select.")
+        
         try:
-            selected_element = self.nodes[int(element_id)]
-        except:
+            if isinstance(self.nodes[element_id], dict):
+                # OCR element
+                return self.nodes[element_id]
+            else:
+                # XML element - convert to dict format
+                node = self.nodes[element_id]
+                screen_coords_str = node.get(f"{{{component_ns}}}screencoord", "(0,0)")
+                size_str = node.get(f"{{{component_ns}}}size", "(0,0)")
+                
+                try:
+                    coords = eval(screen_coords_str)
+                    size = eval(size_str)
+                except:
+                    coords = (0, 0)
+                    size = (0, 0)
+                
+                return {
+                    "position": coords,
+                    "size": size,
+                    "role": node.attrib.get("role", ""),
+                    "name": node.attrib.get("name", ""),
+                    "text": node.text if node.text else "",
+                }
+        except IndexError:
             print("The index of the selected element was out of range.")
-            selected_element = self.nodes[0]
             self.index_out_of_range_flag = True
-        return selected_element
+            return self.find_element(0)
 
     @agent_action
     def click(
@@ -328,40 +425,38 @@ subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_
             button_type:str, which mouse button to press can be "left", "middle", or "right"
             hold_keys:List, list of keys to hold while clicking
         """
-        node = self.find_element(element_id)
-        coordinates: Tuple[int, int] = eval(
-            node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)")
-        )
-        sizes: Tuple[int, int] = eval(
-            node.get("{{{:}}}size".format(component_ns), "(-1, -1)")
-        )
+        element = self.find_element(element_id)
+        coordinates = element["position"]
+        size = element["size"]
 
         # Calculate the center of the element
-        x = coordinates[0] + sizes[0] // 2
-        y = coordinates[1] + sizes[1] // 2
+        x = int(coordinates[0] + size[0] // 2)
+        y = int(coordinates[1] + size[1] // 2)
 
         command = "import pyautogui; "
 
-        # TODO: specified duration?
+        # Add hold keys
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
-        command += f"""import pyautogui; pyautogui.click({x}, {y}, clicks={num_clicks}, button={repr(button_type)}); """
+        
+        command += f"pyautogui.click({x}, {y}, clicks={num_clicks}, button={repr(button_type)}); "
+        
+        # Release hold keys
         for k in hold_keys:
             command += f"pyautogui.keyUp({repr(k)}); "
-        # Return pyautoguicode to click on the element
+        
         return command
 
     @agent_action
     def switch_window(self):
-        """Switch to a different application that is already open"""
-        # return self.app_setup_code.replace("APP_NAME", app_code)
-        return f"import pyautogui; pyautogui.hotkey('alt', 'tab');"
+        """Switch to the next window using Alt+Tab"""
+        return "import pyautogui; pyautogui.hotkey('alt', 'tab')"
 
     @agent_action
     def type(
         self,
         text: str,
-        element_id: int = None,
+        element_id: Optional[int] = None,
         overwrite: bool = False,
         enter: bool = False,
     ):
@@ -372,130 +467,39 @@ subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_
             overwrite:bool Assign it to True if the text should overwrite the existing text, otherwise assign it to False. Using this argument clears all text in an element.
             enter:bool Assign it to True if the enter key should be pressed after typing the text, otherwise assign it to False.
         """
-        try:
-            # Use the provided element_id or default to None
-            node = self.find_element(element_id) if element_id is not None else None
-        except:
-            node = None
+        command = "import pyautogui; "
+        
+        if element_id is not None:
+            try:
+                element = self.find_element(element_id)
+                coordinates = element["position"]
+                size = element["size"]
+                
+                x = int(coordinates[0] + size[0] // 2)
+                y = int(coordinates[1] + size[1] // 2)
+                
+                command += f"pyautogui.click({x}, {y}); "
+            except (IndexError, KeyError, AttributeError):
+                pass  # Continue without clicking if element not found
 
-        if node is not None:
-            # If a node is found, retrieve its coordinates and size
-            coordinates = eval(
-                node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)")
-            )
-            sizes = eval(node.get("{{{:}}}size".format(component_ns), "(-1, -1)"))
+        if overwrite:
+            command += "pyautogui.hotkey('ctrl', 'a'); pyautogui.press('backspace'); "
 
-            # Calculate the center of the element
-            x = coordinates[0] + sizes[0] // 2
-            y = coordinates[1] + sizes[1] // 2
+        command += f"pyautogui.write({repr(text)}); "
 
-            # Start typing at the center of the element
-            command = "import pyautogui; "
-            command += f"pyautogui.click({x}, {y}); "
-
-            if overwrite:
-                command += (
-                    f"pyautogui.hotkey('ctrl', 'a'); pyautogui.press('backspace'); "
-                )
-
-            command += f"pyautogui.write({repr(text)}); "
-
-            if enter:
-                command += "pyautogui.press('enter'); "
-        else:
-            # If no element is found, start typing at the current cursor location
-            command = "import pyautogui; "
-
-            if overwrite:
-                command += (
-                    f"pyautogui.hotkey('ctrl', 'a'); pyautogui.press('backspace'); "
-                )
-
-            command += f"pyautogui.write({repr(text)}); "
-
-            if enter:
-                command += "pyautogui.press('enter'); "
+        if enter:
+            command += "pyautogui.press('enter'); "
 
         return command
 
-        # if overwrite:
-        #     return f"""import pyautogui; pyautogui.click({x}, {y}); pyautogui.hotkey("ctrl", "a"); pyautogui.press("backspace"); pyautogui.typewrite({repr(text)})"""
-        # else:
-        #     return f"""import pyautogui; pyautogui.click({x}, {y}); pyautogui.hotkey("ctrl", "a"); pyautogui.press("backspace"); pyautogui.typewrite("{text}")"""
-
-    # @agent_action
-    # def type_and_enter(self, element_id:int, text:str, overwrite: bool = True):
-    #     '''Type text into the element and press enter
-    #     Args:
-    #         element_id:int ID of the element to type into
-    #         text:str the text to type into the element
-    #     '''
-    #     try:
-    #         node = self.find_element(element_id)
-    #     except:
-    #         node = self.find_element(0)
-    #     # print(node.attrib)
-    #     coordinates = eval(
-    #         node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)"))
-    #     sizes = eval(node.get("{{{:}}}size".format(component_ns), "(-1, -1)"))
-
-    #     # Calculate the center of the element
-    #     x = coordinates[0] + sizes[0] // 2
-    #     y = coordinates[1] + sizes[1] // 2
-
-    #     # Return pyautoguicode to type into the element
-    #     if overwrite:
-    #         return f"""import pyautogui; pyautogui.click({x}, {y}); pyautogui.hotkey("ctrl", "a"); pyautogui.press("backspace"); pyautogui.typewrite({repr(text)}); pyautogui.press("enter")"""
-    #     else:
-    #         return f"""import pyautogui; pyautogui.click({x}, {y}); pyautogui.typewrite({repr(text)}); pyautogui.press("enter")"""
-
-    # @agent_action
-    # def copy_text(self, element_id:int):
-    #     '''Copy the selected text, use instead of ctrl+c
-    #     Args:
-    #         element_id:int ID of the element to copy text from
-    #     '''
-    #     try:
-    #         node = self.find_element(element_id)
-    #     except:
-    #         node = self.find_element(0)
-
-    #     self.clipboard = node.text
-
-    # @agent_action
-    # def paste_text(self, element_id:int, overwrite: bool = True):
-    #     '''Paste text from the clipboard into the element, use instead of ctrl+v
-    #     Args:
-    #         element_id:int ID of the element to copy text from
-    #         overwrite:bool a boolean value to determine if the text should be pasted over the existing text or appended to it
-    #     '''
-    #     try:
-    #         node = self.find_element(element_id)
-    #     except:
-    #         node = self.find_element(0)
-
-    #     coordinates = eval(
-    #         node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)"))
-    #     sizes = eval(node.get("{{{:}}}size".format(component_ns), "(-1, -1)"))
-
-    #     # Calculate the center of the element
-    #     x = coordinates[0] + sizes[0] // 2
-    #     y = coordinates[1] + sizes[1] // 2
-
-    #     # Return pyautoguicode to paste into the element
-    #     if overwrite:
-    #         return f"""import pyautogui; pyautogui.click({x}, {y}); pyautogui.typewrite("{self.clipboard}");"""
-    #     else:
-    #         return f"""import pyautogui; pyautogui.click({x}, {y}); pyautogui.hotkey("ctrl", "a"); pyautogui.press("backspace"); pyautogui.typewrite("{self.clipboard}");"""
-
     @agent_action
     def save_to_knowledge(self, text: List[str]):
-        """Save facts, elements, texts, etc. to a long-term knowledge bank for reuse during this task. Can be used for copy-pasting text, saving elements, etc.
+        """Save facts, elements, texts, etc. to a long-term knowledge for reuse during this task. Can be used for copy-pasting text, saving elements, etc. Use this instead of ctrl+c, ctrl+v.
         Args:
             text:List[str] the text to save to the knowledge
         """
         self.notes.extend(text)
-        return """WAIT"""
+        return "WAIT"
 
     @agent_action
     def drag_and_drop(self, drag_from_id: int, drop_on_id: int, hold_keys: List = []):
@@ -505,72 +509,60 @@ subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_
             drop_on_id:int ID of element to drop on
             hold_keys:List list of keys to hold while dragging
         """
-        node1 = self.find_element(drag_from_id)
-        node2 = self.find_element(drop_on_id)
-        coordinates1 = eval(
-            node1.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)")
-        )
-        sizes1 = eval(node1.get("{{{:}}}size".format(component_ns), "(-1, -1)"))
+        element1 = self.find_element(drag_from_id)
+        element2 = self.find_element(drop_on_id)
+        
+        coords1 = element1["position"]
+        size1 = element1["size"]
+        coords2 = element2["position"]
+        size2 = element2["size"]
 
-        coordinates2 = eval(
-            node2.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)")
-        )
-        sizes2 = eval(node2.get("{{{:}}}size".format(component_ns), "(-1, -1)"))
-
-        # Calculate the center of the element
-        x1 = coordinates1[0] + sizes1[0] // 2
-        y1 = coordinates1[1] + sizes1[1] // 2
-
-        x2 = coordinates2[0] + sizes2[0] // 2
-        y2 = coordinates2[1] + sizes2[1] // 2
+        x1 = int(coords1[0] + size1[0] // 2)
+        y1 = int(coords1[1] + size1[1] // 2)
+        x2 = int(coords2[0] + size2[0] // 2)
+        y2 = int(coords2[1] + size2[1] // 2)
 
         command = "import pyautogui; "
-
         command += f"pyautogui.moveTo({x1}, {y1}); "
-        # TODO: specified duration?
+        
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
-        command += f"pyautogui.dragTo({x2}, {y2}, duration=1.); pyautogui.mouseUp(); "
+        
+        command += f"pyautogui.dragTo({x2}, {y2}, duration=1.0); pyautogui.mouseUp(); "
+        
         for k in hold_keys:
             command += f"pyautogui.keyUp({repr(k)}); "
-
-        # Return pyautoguicode to drag and drop the elements
 
         return command
 
     @agent_action
     def scroll(self, element_id: int, clicks: int):
-        """Scroll the element in the specified direction
+        """Scroll in the specified direction inside the specified element
         Args:
             element_id:int ID of the element to scroll in
             clicks:int the number of clicks to scroll can be positive (up) or negative (down).
         """
         try:
-            node = self.find_element(element_id)
-        except:
-            node = self.find_element(0)
-        # print(node.attrib)
-        coordinates = eval(
-            node.get("{{{:}}}screencoord".format(component_ns), "(-1, -1)")
-        )
-        sizes = eval(node.get("{{{:}}}size".format(component_ns), "(-1, -1)"))
+            element = self.find_element(element_id)
+        except (IndexError, KeyError, AttributeError):
+            element = self.find_element(0)
 
-        # Calculate the center of the element
-        x = coordinates[0] + sizes[0] // 2
-        y = coordinates[1] + sizes[1] // 2
-        return (
-            f"import pyautogui; pyautogui.moveTo({x}, {y}); pyautogui.scroll({clicks})"
-        )
+        coordinates = element["position"]
+        size = element["size"]
+
+        x = int(coordinates[0] + size[0] // 2)
+        y = int(coordinates[1] + size[1] // 2)
+        
+        return f"import pyautogui; pyautogui.moveTo({x}, {y}); pyautogui.scroll({clicks})"
 
     @agent_action
     def hotkey(self, keys: List):
         """Press a hotkey combination
         Args:
-            keys:List the keys to press in combination in a list format (e.g. ['ctrl', 'c'])
+            keys:List the keys to press in combination in a list format (e.g. ['shift', 'c'])
         """
-        # add quotes around the keys
-        keys = [f"'{key}'" for key in keys]
-        return f"import pyautogui; pyautogui.hotkey({', '.join(keys)})"
+        keys_str = [f"'{key}'" for key in keys]
+        return f"import pyautogui; pyautogui.hotkey({', '.join(keys_str)}, interval=0.5)"
 
     @agent_action
     def hold_and_press(self, hold_keys: List, press_keys: List):
@@ -579,12 +571,14 @@ subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_
             hold_keys:List, list of keys to hold
             press_keys:List, list of keys to press in a sequence
         """
-
         press_keys_str = "[" + ", ".join([f"'{key}'" for key in press_keys]) + "]"
         command = "import pyautogui; "
+        
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
+        
         command += f"pyautogui.press({press_keys_str}); "
+        
         for k in hold_keys:
             command += f"pyautogui.keyUp({repr(k)}); "
 
@@ -596,14 +590,31 @@ subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_
         Args:
             time:float the amount of time to wait in seconds
         """
-        return f"""import time; time.sleep({time})"""
+        return f"import time; time.sleep({time})"
 
     @agent_action
     def done(self):
         """End the current task with a success"""
-        return """DONE"""
+        return "DONE"
 
     @agent_action
     def fail(self):
         """End the current task with a failure"""
-        return """FAIL"""
+        return "FAIL"
+
+
+# Define clickable roles that we want to preserve
+clickable_roles = {
+    "button",
+    "text",
+    "entry",
+    "combo box",
+    "list item",
+    "menu item",
+    "check box",
+    "radio button",
+    "link",
+    "tab",
+    "tree item",
+    "table cell",
+}

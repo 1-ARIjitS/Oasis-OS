@@ -23,7 +23,6 @@ class UIAgent:
         platform: str = platform.system().lower(),
         action_space: str = "pyautogui",
         observation_type: str = "a11y_tree",
-        search_engine: str = "perplexica",
     ):
         """Initialize UIAgent
 
@@ -33,18 +32,16 @@ class UIAgent:
             platform: Operating system platform (macos, linux, windows)
             action_space: Type of action space to use (pyautogui, aci)
             observation_type: Type of observations to use (a11y_tree, mixed)
-            engine: Search engine to use (perplexica, LLM)
         """
         self.engine_params = engine_params
         self.grounding_agent = grounding_agent
         self.platform = platform
         self.action_space = action_space
         self.observation_type = observation_type
-        self.engine = search_engine
 
     def reset(self) -> None:
         """Reset agent state"""
-        pass
+        raise NotImplementedError("Subclasses must implement reset() method")
 
     def predict(self, instruction: str, observation: Dict) -> Tuple[Dict, List[str]]:
         """Generate next action prediction
@@ -56,7 +53,7 @@ class UIAgent:
         Returns:
             Tuple containing agent info dictionary and list of actions
         """
-        pass
+        raise NotImplementedError("Subclasses must implement predict() method")
 
     def update_narrative_memory(self, trajectory: str) -> None:
         """Update narrative memory with task trajectory
@@ -64,7 +61,7 @@ class UIAgent:
         Args:
             trajectory: String containing task execution trajectory
         """
-        pass
+        raise NotImplementedError("Subclasses must implement update_narrative_memory() method")
 
     def update_episodic_memory(self, meta_data: Dict, subtask_trajectory: str) -> str:
         """Update episodic memory with subtask trajectory
@@ -76,7 +73,7 @@ class UIAgent:
         Returns:
             Updated subtask trajectory
         """
-        pass
+        raise NotImplementedError("Subclasses must implement update_episodic_memory() method")
 
 
 class GraphSearchAgent(UIAgent):
@@ -87,9 +84,8 @@ class GraphSearchAgent(UIAgent):
         engine_params: Dict,
         grounding_agent: ACI,
         platform: str = platform.system().lower(),
-        action_space: str = "pyatuogui",
+        action_space: str = "pyautogui",
         observation_type: str = "mixed",
-        search_engine: Optional[str] = None,
         memory_root_path: str = os.getcwd(),
         memory_folder_name: str = "kb_s1",
         kb_release_tag: str = "v0.2.2",
@@ -102,7 +98,6 @@ class GraphSearchAgent(UIAgent):
             platform: Operating system platform (macos, ubuntu)
             action_space: Type of action space to use (pyautogui, other)
             observation_type: Type of observations to use (a11y_tree, screenshot, mixed)
-            search_engine: Search engine to use (LLM, perplexica)
             memory_root_path: Path to memory directory. Defaults to current working directory.
             memory_folder_name: Name of memory folder. Defaults to "kb_s2".
             kb_release_tag: Release tag for knowledge base. Defaults to "v0.2.2".
@@ -113,7 +108,6 @@ class GraphSearchAgent(UIAgent):
             platform,
             action_space,
             observation_type,
-            search_engine,
         )
 
         self.memory_root_path = memory_root_path
@@ -156,7 +150,6 @@ class GraphSearchAgent(UIAgent):
             self.engine_params,
             self.grounding_agent,
             platform=self.platform,
-            search_engine=self.engine,
             local_kb_path=self.local_kb_path,
         )
         self.executor = Worker(
@@ -176,8 +169,14 @@ class GraphSearchAgent(UIAgent):
         self.completed_tasks: List[Node] = []
         self.current_subtask: Optional[Node] = None
         self.subtasks: List[Node] = []
-        self.search_query: str = ""
         self.subtask_status: str = "Start"
+        
+        # Safety mechanisms for error recovery
+        self.max_total_steps = 50  # Maximum total steps before forcing completion
+        self.max_subtask_steps = 15  # Maximum steps per subtask before failure
+        self.max_replans = 3  # Maximum number of replans before giving up
+        self.current_replan_count = 0
+        self.total_step_count = 0
 
     def reset_executor_state(self) -> None:
         """Reset executor and step counter"""
@@ -206,9 +205,37 @@ class GraphSearchAgent(UIAgent):
         }
         actions = []
 
+        # Safety check: prevent infinite execution
+        self.total_step_count += 1
+        if self.total_step_count > self.max_total_steps:
+            logger.warning(f"Maximum total steps ({self.max_total_steps}) exceeded. Forcing completion.")
+            return {
+                "error": "Maximum execution steps exceeded",
+                "total_steps": self.total_step_count,
+                "subtask": self.current_subtask.name if self.current_subtask else "Unknown",
+                "subtask_status": "Forced_Complete"
+            }, ["DONE"]
+
         # If the DONE response by the executor is for a subtask, then the agent should continue with the next subtask without sending the action to the environment
-        while not self.should_send_action:
+        loop_safety_counter = 0
+        max_inner_loops = 10  # Prevent infinite inner loops
+        
+        while not self.should_send_action and loop_safety_counter < max_inner_loops:
+            loop_safety_counter += 1
             self.subtask_status = "In"
+            
+            # Safety check for too many replans
+            if self.requires_replan:
+                self.current_replan_count += 1
+                if self.current_replan_count > self.max_replans:
+                    logger.warning(f"Maximum replans ({self.max_replans}) exceeded. Forcing task completion.")
+                    return {
+                        "error": "Maximum replans exceeded",
+                        "replans": self.current_replan_count,
+                        "subtask": self.current_subtask.name if self.current_subtask else "Unknown",
+                        "subtask_status": "Forced_Complete"
+                    }, ["DONE"]
+            
             # if replan is true, generate a new plan. True at start, then true again after a failed plan
             if self.requires_replan:
                 logger.info("(RE)PLANNING...")
@@ -220,10 +247,6 @@ class GraphSearchAgent(UIAgent):
                 )
 
                 self.requires_replan = False
-                if "search_query" in planner_info:
-                    self.search_query = planner_info["search_query"]
-                else:
-                    self.search_query = ""
 
             # use the exectuor to complete the topmost subtask
             if self.needs_next_subtask:
@@ -234,9 +257,11 @@ class GraphSearchAgent(UIAgent):
                 self.subtask_status = "Start"
 
             # get the next action from the executor
+            if self.current_subtask is None:
+                raise RuntimeError("No current subtask available")
+            
             executor_info, actions = self.executor.generate_next_action(
                 instruction=instruction,
-                search_query=self.search_query,
                 subtask=self.current_subtask.name,
                 subtask_info=self.current_subtask.info,
                 future_tasks=self.subtasks,
@@ -245,13 +270,37 @@ class GraphSearchAgent(UIAgent):
             )
 
             self.step_count += 1
+            
+            # Safety check: if a subtask is taking too many steps, force it to complete
+            if self.step_count > self.max_subtask_steps:
+                logger.warning(f"Subtask '{self.current_subtask.name if self.current_subtask else 'Unknown'}' exceeded maximum steps ({self.max_subtask_steps}). Forcing completion.")
+                actions = ["DONE"]
+                executor_info["forced_completion"] = True
+                executor_info["reason"] = f"Exceeded maximum subtask steps ({self.max_subtask_steps})"
 
             # set the should_send_action flag to True if the executor returns an action
             self.should_send_action = True
             if "FAIL" in actions:
                 self.requires_replan = True
-                # set the failure feedback to the evaluator feedback
-                self.failure_feedback = f"Completed subtasks: {self.completed_tasks}. The subtask {self.current_subtask} cannot be completed. Please try another approach. {executor_info['plan_code']}. Please replan."
+                
+                # Track failed subtask for better replanning
+                if self.current_subtask:
+                    self.planner._update_subtask_tracking(self.current_subtask.name, False)
+                
+                # Enhanced failure feedback with more context
+                failed_attempts = getattr(self.executor, 'action_attempts', {})
+                recent_actions = getattr(self.executor, 'previous_actions', [])
+                
+                self.failure_feedback = (
+                    f"SUBTASK FAILURE ANALYSIS:\n"
+                    f"- Completed subtasks: {[task.name for task in self.completed_tasks]}\n"
+                    f"- Failed subtask: '{self.current_subtask.name if self.current_subtask else 'Unknown'}'\n"
+                    f"- Failed action: {executor_info.get('plan_code', 'Unknown')}\n"
+                    f"- Recent action history: {recent_actions[-5:] if len(recent_actions) > 5 else recent_actions}\n"
+                    f"- Execution attempts made: {len(failed_attempts)} unique actions tried\n"
+                    f"- Suggested approach: Try breaking down the failed subtask into smaller steps or use alternative methods (hotkeys vs clicks)\n"
+                    f"Please replan with a different approach."
+                )
                 self.needs_next_subtask = True
 
                 # reset the step count, executor, and evaluator
@@ -263,7 +312,12 @@ class GraphSearchAgent(UIAgent):
 
             elif "DONE" in actions:
                 self.requires_replan = False
-                self.completed_tasks.append(self.current_subtask)
+                if self.current_subtask is not None:
+                    # Track successful subtask completion
+                    self.planner._update_subtask_tracking(self.current_subtask.name, True)
+                    self.completed_tasks.append(self.current_subtask)
+                    logger.info(f"Successfully completed subtask: {self.current_subtask.name}")
+                    
                 self.needs_next_subtask = True
                 if self.subtasks:
                     self.should_send_action = False
@@ -272,6 +326,16 @@ class GraphSearchAgent(UIAgent):
                 self.reset_executor_state()
 
             self.turn_count += 1
+            
+        # Safety check: if we exited the loop due to safety counter, force completion
+        if loop_safety_counter >= max_inner_loops:
+            logger.warning(f"Inner loop safety limit reached. Forcing action to prevent infinite loop.")
+            if not actions:
+                actions = ["DONE"]
+            # Update evaluator_info to indicate forced completion
+            evaluator_info["error"] = "Inner loop safety limit reached"
+            evaluator_info["forced_action"] = True
+                
         # reset the should_send_action flag for next iteration
         self.should_send_action = False
 
@@ -283,13 +347,22 @@ class GraphSearchAgent(UIAgent):
                 for k, v in d.items()
             }
         }
-        info.update(
-            {
-                "subtask": self.current_subtask.name,
-                "subtask_info": self.current_subtask.info,
-                "subtask_status": self.subtask_status,
-            }
-        )
+        if self.current_subtask is not None:
+            info.update(
+                {
+                    "subtask": self.current_subtask.name,
+                    "subtask_info": self.current_subtask.info,
+                    "subtask_status": self.subtask_status,
+                }
+            )
+        else:
+            info.update(
+                {
+                    "subtask": "",
+                    "subtask_info": "",
+                    "subtask_status": self.subtask_status,
+                }
+            )
 
         return info, actions
 
@@ -305,12 +378,12 @@ class GraphSearchAgent(UIAgent):
             )
             try:
                 reflections = json.load(open(reflection_path))
-            except:
+            except (FileNotFoundError, json.JSONDecodeError):
                 reflections = {}
 
-            if self.search_query not in reflections:
+            if trajectory not in reflections:
                 reflection = self.planner.summarize_narrative(trajectory)
-                reflections[self.search_query] = reflection
+                reflections[trajectory] = reflection
 
             with open(reflection_path, "w") as f:
                 json.dump(reflections, f, indent=2)
@@ -344,7 +417,7 @@ class GraphSearchAgent(UIAgent):
                         self.local_kb_path, self.platform, "episodic_memory.json"
                     )
                     kb = json.load(open(subtask_path))
-                except:
+                except (FileNotFoundError, json.JSONDecodeError):
                     kb = {}
                 if subtask_key not in kb.keys():
                     subtask_summarization = self.planner.summarize_episode(
@@ -360,9 +433,11 @@ class GraphSearchAgent(UIAgent):
                 # Reset for the next subtask
                 subtask_trajectory = ""
             # Start a new subtask trajectory
+            # Extract task from existing trajectory or use subtask info
+            task_description = subtask_info if subtask_info else subtask
             subtask_trajectory = (
                 "Task:\n"
-                + self.search_query
+                + task_description
                 + "\n\nSubtask: "
                 + subtask
                 + "\nSubtask Instruction: "

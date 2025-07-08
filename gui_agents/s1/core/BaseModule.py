@@ -9,7 +9,7 @@ class BaseModule:
         self.platform = platform
 
     def _create_agent(
-        self, system_prompt: str = None, engine_params: Optional[Dict] = None
+        self, system_prompt: Optional[str] = None, engine_params: Optional[Dict] = None
     ) -> LMMAgent:
         """Create a new LMMAgent instance"""
         agent = LMMAgent(engine_params or self.engine_params)

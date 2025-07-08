@@ -102,7 +102,19 @@ def run_agent(agent: UIAgent, instruction: str):
         obs["screenshot"] = screenshot_bytes
 
         # Get next action code from the agent
-        info, code = agent.predict(instruction=instruction, observation=obs)
+        try:
+            info, code = agent.predict(instruction=instruction, observation=obs)
+        except Exception as e:
+            print(f"ERROR GETTING PREDICTION FROM AGENT: {e}")
+            print("The agent encountered an error during planning. Retrying...")
+            time.sleep(2.0)
+            continue
+
+        # Validate that we have valid code
+        if not code or len(code) == 0:
+            print("ERROR: Agent returned empty code. Retrying...")
+            time.sleep(2.0)
+            continue
 
         if "done" in code[0].lower() or "fail" in code[0].lower():
             if platform.system() == "Darwin":
@@ -128,9 +140,15 @@ def run_agent(agent: UIAgent, instruction: str):
             time.sleep(1.0)
             print("EXECUTING CODE:", code[0])
 
-            # Ask for permission before executing
-            exec(code[0])
-            time.sleep(1.0)
+            try:
+                # Ask for permission before executing
+                exec(code[0])
+                time.sleep(1.0)
+            except Exception as e:
+                print(f"ERROR EXECUTING CODE: {e}")
+                print(f"CODE THAT FAILED: {code[0]}")
+                print("The agent will continue with the next action...")
+                time.sleep(2.0)
 
             # Update task and subtask trajectories and optionally the episodic memory
             traj += (
@@ -157,6 +175,13 @@ def main():
         action="store_true",
         help="Enable teaching mode: record a manual demonstration instead of running the agent.",
     )
+    parser.add_argument(
+        "--engine-type",
+        type=str,
+        choices=["openai", "anthropic", "groq", "azure", "vllm", "ollama"],
+        default=None,
+        help="Explicitly specify the LLM engine type (overrides automatic detection).",
+    )
     args = parser.parse_args()
 
     if current_platform == "darwin":
@@ -170,10 +195,23 @@ def main():
 
     while True:
         query = input("Query: ")
-        if "gpt" in args.model:
-            engine_type = "openai"
-        elif "claude" in args.model:
-            engine_type = "anthropic"
+
+        # Determine engine type
+        if args.engine_type is not None:
+            engine_type = args.engine_type
+        else:
+            model_lower = args.model.lower()
+            if "gpt" in model_lower:
+                engine_type = "openai"
+            elif "claude" in model_lower:
+                engine_type = "anthropic"
+            # Heuristics: Prefer Groq only when API key is configured, otherwise default to local (vLLM/Ollama)
+            elif any(k in model_lower for k in ["llama", "deepseek", "maverick", "scout"]):
+                engine_type = "groq" if os.getenv("GROQ_API_KEY") else "ollama"
+            else:
+                # Default to ollama for local models
+                engine_type = "ollama"
+
         engine_params = {
             "engine_type": engine_type,
             "model": args.model,
@@ -214,3 +252,73 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def setup_logging():
+    """Setup logging configuration with proper error handling"""
+    try:
+        # Ensure logs directory exists
+        logs_dir = "logs"
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir, exist_ok=True)
+            
+        datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Setup main logger
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+        
+        # Console handler for normal output
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        
+        # File handlers with error handling
+        try:
+            debug_handler = logging.FileHandler(
+                os.path.join(logs_dir, f"debug-{datetime_str}.log"), 
+                encoding="utf-8",
+                mode='w'
+            )
+            debug_handler.setLevel(logging.DEBUG)
+        except (OSError, IOError) as e:
+            print(f"Warning: Could not create debug log file: {e}")
+            debug_handler = None
+            
+        try:
+            sdebug_handler = logging.FileHandler(
+                os.path.join(logs_dir, f"sdebug-{datetime_str}.log"), 
+                encoding="utf-8",
+                mode='w'
+            )
+            sdebug_handler.setLevel(logging.DEBUG)
+            sdebug_handler.addFilter(logging.Filter("desktopenv"))
+        except (OSError, IOError) as e:
+            print(f"Warning: Could not create sdebug log file: {e}")
+            sdebug_handler = None
+        
+        # Create formatter
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        
+        # Add formatter to handlers
+        console_handler.setFormatter(formatter)
+        if debug_handler:
+            debug_handler.setFormatter(formatter)
+        if sdebug_handler:
+            sdebug_handler.setFormatter(formatter)
+        
+        # Add handlers to logger
+        logger.addHandler(console_handler)
+        if debug_handler:
+            logger.addHandler(debug_handler)
+        if sdebug_handler:
+            logger.addHandler(sdebug_handler)
+            
+        print(f"Logging initialized. Log files will be saved to: {logs_dir}/")
+        return logger
+        
+    except Exception as e:
+        print(f"Error setting up logging: {e}")
+        # Fallback to basic console logging
+        logging.basicConfig(level=logging.INFO)
+        return logging.getLogger()

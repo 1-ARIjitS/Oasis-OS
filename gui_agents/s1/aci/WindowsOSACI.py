@@ -3,7 +3,7 @@
 import base64
 import os
 import platform
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import psutil
@@ -46,12 +46,37 @@ class WindowsACI(ACI):
         super().__init__(top_app_only=top_app_only, ocr=ocr)
         self.nodes = []
         self.all_apps = list_apps_in_directories()
+        
+        # Enhanced action tracking and hotkey suggestions
+        self.recent_actions = []
+        self.hotkey_suggestions = {
+            # Common application hotkeys
+            "save": ["ctrl", "s"],
+            "copy": ["ctrl", "c"],
+            "paste": ["ctrl", "v"],
+            "cut": ["ctrl", "x"],
+            "undo": ["ctrl", "z"],
+            "redo": ["ctrl", "y"],
+            "find": ["ctrl", "f"],
+            "select_all": ["ctrl", "a"],
+            "new": ["ctrl", "n"],
+            "open": ["ctrl", "o"],
+            "close": ["ctrl", "w"],
+            "quit": ["alt", "f4"],
+            "switch_app": ["alt", "tab"],
+            "switch_window": ["ctrl", "tab"],
+            "refresh": ["f5"],
+            "fullscreen": ["f11"],
+            "minimize": ["win", "down"],
+            "maximize": ["win", "up"],
+        }
 
     def get_active_apps(self, obs: Dict) -> List[str]:
         return UIElement.get_current_applications(obs)
 
     def get_top_app(self, obs: Dict) -> str:
-        return UIElement.get_top_app(obs)
+        result = UIElement.get_top_app(obs)
+        return result if result is not None else ""
 
     def preserve_nodes(self, tree, exclude_roles=None):
         if exclude_roles is None:
@@ -89,19 +114,58 @@ class WindowsACI(ACI):
         return preserved_nodes
 
     def extract_elements_from_screenshot(self, screenshot: bytes) -> Dict[str, Any]:
+        # Try to get OCR server URL from environment
         url = os.environ.get("OCR_SERVER_ADDRESS")
+        
         if not url:
-            raise EnvironmentError("OCR SERVER ADDRESS NOT SET")
-
-        encoded_screenshot = base64.b64encode(screenshot).decode("utf-8")
-        response = requests.post(url, json={"img_bytes": encoded_screenshot})
-
-        if response.status_code != 200:
+            print("Warning: OCR_SERVER_ADDRESS not set. OCR functionality will be disabled.")
+            print("To enable OCR, set the environment variable:")
+            print("export OCR_SERVER_ADDRESS='http://localhost:8000'")
             return {
-                "error": f"Request failed with status code {response.status_code}",
+                "error": "OCR SERVER ADDRESS NOT SET",
                 "results": [],
             }
-        return response.json()
+        
+        try:
+            headers = {"Content-Type": "application/json"}
+            data = {
+                "image": base64.b64encode(screenshot).decode("utf-8"),
+                "ocr_type": "paddle"
+            }
+            
+            response = requests.post(url, json=data, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            return response.json()
+            
+        except requests.exceptions.ConnectionError:
+            print(f"Error: Cannot connect to OCR server at {url}")
+            print("Please ensure the OCR server is running.")
+            return {
+                "error": "Cannot connect to OCR server",
+                "results": [],
+            }
+            
+        except requests.exceptions.Timeout:
+            print("Error: OCR server request timed out after 30 seconds.")
+            return {
+                "error": "OCR server request timed out",
+                "results": [],
+            }
+            
+        except requests.exceptions.HTTPError as e:
+            print(f"Error: OCR server returned HTTP error: {e}")
+            return {
+                "error": f"OCR server returned HTTP error: {e}",
+                "results": [],
+            }
+            
+        except Exception as e:
+            print(f"Error: Unexpected error with OCR server: {e}")
+            return {
+                "error": f"Unexpected error with OCR server: {e}",
+                "results": [],
+            }
 
     def add_ocr_elements(
         self,
@@ -306,7 +370,7 @@ class WindowsACI(ACI):
     @agent_action
     def type(
         self,
-        element_id: int = None,
+        element_id: Optional[int] = None,
         text: str = "",
         overwrite: bool = False,
         enter: bool = False,
@@ -320,7 +384,7 @@ class WindowsACI(ACI):
         """
         try:
             node = self.find_element(element_id) if element_id is not None else None
-        except:
+        except (IndexError, KeyError, AttributeError):
             node = None
 
         if node is not None:
@@ -404,7 +468,7 @@ class WindowsACI(ACI):
         """
         try:
             node = self.find_element(element_id)
-        except:
+        except (IndexError, KeyError, AttributeError):
             node = self.find_element(0)
 
         coordinates = node["position"]
@@ -477,13 +541,19 @@ class UIElement:
             self.element = element  # This should be a control wrapper
 
     def get_attribute_names(self):
+        if self.element is None:
+            return []
         return list(self.element.element_info.get_properties().keys())
 
     def attribute(self, key: str):
+        if self.element is None:
+            return None
         props = self.element.element_info.get_properties()
         return props.get(key, None)
 
     def children(self):
+        if self.element is None:
+            return []
         try:
             return [UIElement(child) for child in self.element.children()]
         except Exception as e:
@@ -491,20 +561,30 @@ class UIElement:
             return []
 
     def role(self):
+        if self.element is None:
+            return "Unknown"
         return self.element.element_info.control_type
 
     def position(self):
+        if self.element is None:
+            return None
         rect = self.element.rectangle()
         return (rect.left, rect.top)
 
     def size(self):
+        if self.element is None:
+            return None
         rect = self.element.rectangle()
         return (rect.width(), rect.height())
 
     def title(self):
+        if self.element is None:
+            return ""
         return self.element.element_info.name
 
     def text(self):
+        if self.element is None:
+            return ""
         return self.element.window_text()
 
     def isValid(self):
@@ -522,20 +602,22 @@ class UIElement:
         }
 
     @staticmethod
-    def get_current_applications(obs: Dict):
+    def get_current_applications(obs: Dict) -> List[str]:
+        # obs parameter is not used in current implementation but kept for interface consistency
         apps = []
         for proc in psutil.process_iter(["pid", "name"]):
             apps.append(proc.info["name"])
         return apps
 
     @staticmethod
-    def get_top_app(obs: Dict):
+    def get_top_app(obs: Dict) -> str:
+        # obs parameter is not used in current implementation but kept for interface consistency
         hwnd = win32gui.GetForegroundWindow()
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         for proc in psutil.process_iter(["pid", "name"]):
             if proc.info["pid"] == pid:
                 return proc.info["name"]
-        return None
+        return ""
 
     @staticmethod
     def list_apps_in_directories():

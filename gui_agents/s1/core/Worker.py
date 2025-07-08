@@ -10,6 +10,7 @@ from gui_agents.s1.core.Knowledge import KnowledgeBase
 from gui_agents.s1.core.ProceduralMemory import PROCEDURAL_MEMORY
 from gui_agents.s1.utils import common_utils
 from gui_agents.s1.utils.common_utils import Node, calculate_tokens, call_llm_safe
+from gui_agents.s1.mllm.MultimodalEngine import LMMEngineGroq, LMMEngineOllama  # local import to avoid circular
 
 logger = logging.getLogger("desktopenv.agent")
 
@@ -21,7 +22,6 @@ class Worker(BaseModule):
         grounding_agent: ACI,
         local_kb_path: str,
         platform: str = platform.system().lower(),
-        search_engine: str = "perplexica",
         enable_reflection: bool = True,
         use_subtask_experience: bool = True,
     ):
@@ -34,8 +34,6 @@ class Worker(BaseModule):
                 The grounding agent to use
             local_kb_path: str
                 Path to knowledge base
-            search_engine: str
-                The search engine to use
             enable_reflection: bool
                 Whether to enable reflection
             use_subtask_experience: bool
@@ -46,7 +44,6 @@ class Worker(BaseModule):
         self.grounding_agent = grounding_agent
         self.local_kb_path = local_kb_path
         self.enable_reflection = enable_reflection
-        self.search_engine = search_engine
         self.use_subtask_experience = use_subtask_experience
         self.reset()
 
@@ -86,34 +83,162 @@ class Worker(BaseModule):
         self.screenshot_inputs = []
         # Maximum (user,assistant) message pairs to keep in generator history
         self.max_trajectory_length = 8
+        
+        # Enhanced state tracking for better execution
+        self.previous_actions = []  # Track recent actions to prevent repetition
+        self.previous_states = []   # Track UI states to detect progress
+        self.action_attempts = {}   # Track failed action attempts for retry logic
+        self.stuck_detection_window = 3  # Number of actions to check for stuck patterns
+        self.max_retry_attempts = 2  # Maximum retries for failed actions
 
     # TODO: Experimental
     def remove_ids_from_history(self):
         for message in self.generator_agent.messages:
-            if message["role"] == "user":
-                for content in message["content"]:
-                    if content["type"] == "text":
-                        # Regex pattern to match lines that start with a number followed by spaces and remove the number
-                        pattern = r"^\d+\s+"
+            if isinstance(message, dict) and message.get("role") == "user":
+                content_list = message.get("content", [])
+                if isinstance(content_list, list):
+                    for content in content_list:
+                        if isinstance(content, dict) and content.get("type") == "text":
+                            text_content = content.get("text", "")
+                            if isinstance(text_content, str):
+                                # Regex pattern to match lines that start with a number followed by spaces and remove the number
+                                pattern = r"^\d+\s+"
 
-                        # Apply the regex substitution on each line
-                        processed_lines = [
-                            re.sub(pattern, "", line)
-                            for line in content["text"].splitlines()
-                        ]
+                                # Apply the regex substitution on each line
+                                processed_lines = [
+                                    re.sub(pattern, "", line)
+                                    for line in text_content.splitlines()
+                                ]
 
-                        # Join the processed lines back into a single string
-                        result = "\n".join(processed_lines)
+                                # Join the processed lines back into a single string
+                                result = "\n".join(processed_lines)
 
-                        result = result.replace("id\t", "")
+                                result = result.replace("id\t", "")
 
-                        # replace message content
-                        content["text"] = result
+                                # replace message content
+                                content["text"] = result
+
+    def _detect_stuck_pattern(self, current_action: str) -> bool:
+        """Detect if the agent is stuck in a repetitive pattern"""
+        if len(self.previous_actions) < self.stuck_detection_window:
+            return False
+        
+        # Check for exact repetition of actions
+        recent_actions = self.previous_actions[-self.stuck_detection_window:]
+        if all(action == current_action for action in recent_actions):
+            logger.warning(f"Detected stuck pattern: repeating action '{current_action}'")
+            return True
+        
+        # Check for alternating pattern (A-B-A-B)
+        if len(recent_actions) >= 2:
+            if recent_actions[-1] == current_action and recent_actions[-2] != current_action:
+                alternating_count = 0
+                for i in range(len(recent_actions) - 1, 0, -2):
+                    if i < len(recent_actions) and recent_actions[i] == current_action:
+                        alternating_count += 1
+                    else:
+                        break
+                if alternating_count >= 2:
+                    logger.warning(f"Detected alternating pattern with action '{current_action}'")
+                    return True
+        
+        return False
+
+    def _track_action_attempt(self, action: str, success: bool) -> bool:
+        """Track action attempts and determine if retry should be attempted"""
+        action_key = action.strip()
+        
+        if action_key not in self.action_attempts:
+            self.action_attempts[action_key] = {'attempts': 0, 'last_success': None}
+        
+        self.action_attempts[action_key]['attempts'] += 1
+        self.action_attempts[action_key]['last_success'] = success
+        
+        # Return True if we should retry, False if we've exceeded max attempts
+        return self.action_attempts[action_key]['attempts'] <= self.max_retry_attempts
+
+    def _generate_state_signature(self, obs: Dict) -> str:
+        """Generate a signature of the current UI state for comparison"""
+        tree_input = self.grounding_agent.linearize_and_annotate_tree(obs)
+        # Create a simplified signature focusing on key elements
+        lines = tree_input.split('\n')[1:]  # Skip header
+        signature_elements = []
+        
+        for line in lines[:20]:  # Limit to first 20 elements for efficiency
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                # Include element type and name for signature
+                element_type = parts[1] if len(parts) > 1 else ""
+                element_name = parts[2] if len(parts) > 2 else ""
+                if element_type and element_name:
+                    signature_elements.append(f"{element_type}:{element_name}")
+        
+        return "|".join(signature_elements)
+
+    def _check_progress_made(self, current_state: str) -> bool:
+        """Check if progress has been made since the last few actions"""
+        if len(self.previous_states) < 2:
+            return True  # Assume progress if we don't have enough history
+        
+        # Check if current state is different from recent states
+        recent_states = self.previous_states[-2:]
+        return current_state not in recent_states
+
+    def _suggest_alternative_action(self, stuck_action: str, obs: Dict) -> str:
+        """Suggest an alternative action when stuck"""
+        # Common alternative strategies
+        alternatives = {
+            "click": "Try using hotkeys like Enter, Tab, or Escape instead of clicking",
+            "type": "Try using Ctrl+A to select all first, then type the text",
+            "scroll": "Try using Page Up/Page Down or arrow keys instead of scrolling",
+            "hotkey": "Try clicking on the element first to ensure focus, then use hotkey",
+        }
+        
+        action_type = "unknown"
+        for action_key in alternatives.keys():
+            if action_key in stuck_action.lower():
+                action_type = action_key
+                break
+        
+        return alternatives.get(action_type, "Try a different approach or break the task into smaller steps")
+
+    def _prepare_reflection_context(self, subtask: str, subtask_info: str) -> str:
+        """Prepare enhanced context for reflection analysis"""
+        context = (
+            f"SUBTASK ANALYSIS:\n"
+            f"Current Subtask: {subtask}\n"
+            f"Subtask Instructions: {subtask_info}\n\n"
+            f"EXECUTION TRAJECTORY:\n"
+        )
+        
+        # Add recent action history with pattern detection
+        if self.previous_actions:
+            context += f"Recent Actions: {self.previous_actions[-5:]}\n"
+            
+            # Detect patterns in recent actions
+            if len(self.previous_actions) >= 3:
+                last_three = self.previous_actions[-3:]
+                if len(set(last_three)) == 1:
+                    context += f"PATTERN DETECTED: Repeating same action '{last_three[0]}'\n"
+                elif len(set(last_three)) == 2 and last_three[0] == last_three[2]:
+                    context += f"PATTERN DETECTED: Alternating actions between '{last_three[0]}' and '{last_three[1]}'\n"
+        
+        # Add planner history
+        if self.planner_history:
+            context += f"\nPlanning History:\n"
+            context += "\n".join(self.planner_history[-3:])  # Last 3 plans
+        
+        # Add reflection history to avoid repetition
+        if self.reflections:
+            context += f"\nPrevious Reflections:\n"
+            context += "\n".join(self.reflections[-2:])  # Last 2 reflections
+            context += "\nNOTE: Avoid repeating previous reflection guidance.\n"
+        
+        return context
 
     def generate_next_action(
         self,
         instruction: str,
-        search_query: str,
         subtask: str,
         subtask_info: str,
         future_tasks: List[Node],
@@ -134,7 +259,7 @@ class Worker(BaseModule):
             if self.use_subtask_experience:
                 subtask_query_key = (
                     "Task:\n"
-                    + search_query
+                    + instruction
                     + "\n\nSubtask: "
                     + subtask
                     + "\nSubtask Instruction: "
@@ -165,41 +290,52 @@ class Worker(BaseModule):
         # Trim history to avoid context bloat
         self.flush_messages()
 
-        # Reflection generation
+        # Enhanced reflection generation with pattern detection
         reflection = None
         if self.enable_reflection and self.turn_count > 0:
-            # TODO: reuse planner history
-            self.reflection_agent.add_message(
-                "Task Description: "
-                + subtask
-                + " Instruction: "
-                + subtask_info
-                + "\n"
-                + "Current Trajectory: "
-                + "\n\n".join(self.planner_history)
-                + "\n"
-            )
+            # Prepare enhanced trajectory information for reflection
+            trajectory_summary = self._prepare_reflection_context(subtask, subtask_info)
+            
+            self.reflection_agent.add_message(trajectory_summary)
             reflection = call_llm_safe(self.reflection_agent)
-            self.reflections.append(reflection)
-            self.reflection_agent.add_message(reflection)
-
-            logger.info("REFLECTION: %s", reflection)
+            
+            # Convert reflection to string if it's a Dag object
+            reflection_text = str(reflection) if reflection else ""
+            
+            # Only keep reflection if it provides actionable guidance
+            if reflection_text and len(reflection_text.strip()) > 20:  # Filter out empty/minimal reflections
+                self.reflections.append(reflection_text)
+                self.reflection_agent.add_message(reflection_text)
+                logger.info("ACTIONABLE REFLECTION: %s", reflection_text)
+                reflection = reflection_text  # Use the string version
+            else:
+                reflection = None  # Clear non-actionable reflection
 
         # Plan Generation
         tree_input = agent.linearize_and_annotate_tree(obs)
+        current_state = self._generate_state_signature(obs)
+        
+        # Check for progress and stuck patterns
+        progress_made = self._check_progress_made(current_state)
+        stuck_warning = ""
+        
+        if not progress_made and len(self.previous_actions) > 0:
+            stuck_warning = f"\nWARNING: No progress detected in recent actions. Consider alternative approaches.\nLast actions: {self.previous_actions[-3:]}\nSuggestion: {self._suggest_alternative_action(self.previous_actions[-1] if self.previous_actions else '', obs)}\n"
 
         self.remove_ids_from_history()
 
-        # Bash terminal message.
+        # Enhanced terminal message with progress tracking
         generator_message = (
             (
-                f"\nYou may use the reflection on the previous trajectory: {reflection}\n"
+                f"\nReflection on previous trajectory: {reflection}\n"
                 if reflection
                 else ""
             )
+            + stuck_warning
             + f"Accessibility Tree: {tree_input}\n"
             f"Text Buffer = [{','.join(agent.notes)}]. "
             f"The current open applications are {agent.get_active_apps(obs)} and the active app is {agent.get_top_app(obs)}.\n"
+            f"Progress Status: {'Making progress' if progress_made else 'No recent progress - consider alternative approach'}\n"
         )
 
         print("ACTIVE APP IS: ", agent.get_top_app(obs))
@@ -210,9 +346,11 @@ class Worker(BaseModule):
 
         logger.info("GENERATOR MESSAGE: %s", generator_message)
 
-        self.generator_agent.add_message(
-            generator_message, image_content=obs["screenshot"]
-        )
+        # Groq-hosted models currently allow max 5 images per request. Skip screenshots to avoid 400 errors.
+        if isinstance(self.generator_agent.engine, LMMEngineGroq) or isinstance(self.generator_agent.engine, LMMEngineOllama):
+            self.generator_agent.add_message(generator_message)
+        else:
+            self.generator_agent.add_message(generator_message, image_content=obs["screenshot"])
 
         plan = call_llm_safe(self.generator_agent)
         self.planner_history.append(plan)
@@ -270,5 +408,15 @@ class Worker(BaseModule):
 
         self.tree_inputs.append(tree_input)
         self.screenshot_inputs.append(obs["screenshot"])
+        
+        # Update state tracking for next iteration
+        self.previous_states.append(current_state)
+        self.previous_actions.append(plan_code)
+        
+        # Keep only recent history to prevent memory bloat
+        if len(self.previous_states) > 10:
+            self.previous_states = self.previous_states[-10:]
+        if len(self.previous_actions) > 10:
+            self.previous_actions = self.previous_actions[-10:]
 
         return executor_info, [exec_code]

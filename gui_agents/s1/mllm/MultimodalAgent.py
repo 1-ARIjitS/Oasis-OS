@@ -8,6 +8,8 @@ import re
 from gui_agents.s1.mllm.MultimodalEngine import (
     LMMEngineAnthropic,
     LMMEngineAzureOpenAI,
+    LMMEngineGroq,
+    LMMEngineOllama,
     LMMEngineOpenAI,
     LMMEnginevLLM,
 )
@@ -15,6 +17,7 @@ from gui_agents.s1.mllm.MultimodalEngine import (
 data_type_map = {
     "openai": {"image_url": "image_url"},
     "anthropic": {"image_url": "image"},
+    "groq": {"image_url": "image_url"},
 }
 
 
@@ -29,10 +32,14 @@ class LMMAgent:
                     self.engine = LMMEngineAnthropic(**engine_params)
                 elif engine_type == "azure":
                     self.engine = LMMEngineAzureOpenAI(**engine_params)
+                elif engine_type == "groq":
+                    self.engine = LMMEngineGroq(**engine_params)
                 elif engine_type == "vllm":
                     self.engine = LMMEnginevLLM(**engine_params)
+                elif engine_type == "ollama":
+                    self.engine = LMMEngineOllama(**engine_params)
                 else:
-                    raise ValueError("engine_type must be either 'openai' or 'azure'")
+                    raise ValueError("engine_type must be one of: 'openai', 'anthropic', 'azure', 'groq', 'vllm', 'ollama'")
             else:
                 raise ValueError("engine_params must be provided")
         else:
@@ -56,28 +63,25 @@ class LMMAgent:
     def reset(
         self,
     ):
+        # Reinitialize message history with a correctly formatted system message
+        self.messages = [self._build_system_message(self.system_prompt)]
 
-        self.messages = [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": self.system_prompt}],
-            }
-        ]
+    def _build_system_message(self, text: str):
+        """Return properly formatted system message depending on engine."""
+        # Anthropic expects the multi-modal dict structure; OpenAI/Groq/Azure expect plain string
+        if isinstance(self.engine, LMMEngineAnthropic):
+            return {"role": "system", "content": [{"type": "text", "text": text}]}
+        else:
+            return {"role": "system", "content": text}
 
     def add_system_prompt(self, system_prompt):
         self.system_prompt = system_prompt
+        system_msg = self._build_system_message(self.system_prompt)
+
         if len(self.messages) > 0:
-            self.messages[0] = {
-                "role": "system",
-                "content": [{"type": "text", "text": self.system_prompt}],
-            }
+            self.messages[0] = system_msg
         else:
-            self.messages.append(
-                {
-                    "role": "system",
-                    "content": [{"type": "text", "text": self.system_prompt}],
-                }
-            )
+            self.messages.append(system_msg)
 
     def remove_message_at(self, index):
         """Remove a message at a given index"""
@@ -111,7 +115,7 @@ class LMMAgent:
         """Add a new message to the list of messages"""
 
         # API-style inference from OpenAI and AzureOpenAI
-        if isinstance(self.engine, (LMMEngineOpenAI, LMMEngineAzureOpenAI)):
+        if isinstance(self.engine, (LMMEngineOpenAI, LMMEngineAzureOpenAI, LMMEngineGroq)):
             # infer role from previous message
             if role != "user":
                 if self.messages[-1]["role"] == "system":
@@ -121,38 +125,46 @@ class LMMAgent:
                 elif self.messages[-1]["role"] == "assistant":
                     role = "user"
 
-            message = {
-                "role": role,
-                "content": [{"type": "text", "text": text_content}],
-            }
+            # For Groq text-only models, use plain string content when *no* image is supplied
+            if image_content is None and isinstance(self.engine, LMMEngineGroq):
+                message = {"role": role, "content": text_content}
+            else:
+                # Default multimodal (vision) message structure
+                message = {
+                    "role": role,
+                    "content": [{"type": "text", "text": text_content}],
+                }
 
             if image_content:
+                # Ensure content is a list for image attachments
+                if isinstance(message["content"], str):
+                    # Convert plain string to the expected list format
+                    message["content"] = [{"type": "text", "text": message["content"]}]
+
                 # Check if image_content is a list or a single image
                 if isinstance(image_content, list):
                     # If image_content is a list of images, loop through each image
                     for image in image_content:
                         base64_image = self.encode_image(image)
-                        message["content"].append(
-                            {
+                        image_content_item = {
                                 "type": "image_url",
                                 "image_url": {
                                     "url": f"data:image/png;base64,{base64_image}",
                                     "detail": image_detail,
                                 },
                             }
-                        )
+                        message["content"].append(image_content_item)  # type: ignore
                 else:
                     # If image_content is a single image, handle it directly
                     base64_image = self.encode_image(image_content)
-                    message["content"].append(
-                        {
+                    image_content_item = {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/png;base64,{base64_image}",
                                 "detail": image_detail,
                             },
                         }
-                    )
+                    message["content"].append(image_content_item)  # type: ignore
             self.messages.append(message)
 
         # For API-style inference from Anthropic
@@ -251,13 +263,23 @@ class LMMAgent:
         if messages is None:
             messages = self.messages
         if user_message:
-            messages.append(
-                {"role": "user", "content": [{"type": "text", "text": user_message}]}
-            )
+            if isinstance(self.engine, LMMEngineGroq):
+                # Groq expects plain text content for text-only models
+                messages.append({"role": "user", "content": user_message})
+            else:
+                messages.append(
+                    {"role": "user", "content": [{"type": "text", "text": user_message}]}
+                )
 
-        return self.engine.generate(
-            messages,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
+        # Build parameter dictionary to avoid passing None where type checker expects int
+        _gen_params = {
+            "messages": messages,
+            "temperature": temperature,
             **kwargs,
-        )
+        }
+
+        # Only include max_new_tokens if explicitly provided
+        if max_new_tokens is not None:
+            _gen_params["max_new_tokens"] = max_new_tokens
+
+        return self.engine.generate(**_gen_params)

@@ -31,6 +31,23 @@ class PROCEDURAL_MEMORY:
 
         procedural_memory += textwrap.dedent(
             """
+        **IMPORTANT APPLICATION OPENING GUIDELINES:**
+        1. **ALWAYS use agent.open(app_name) to launch new applications** - this uses Windows + S search which is fast and reliable
+        2. **Use agent.switch_applications(app_name) to switch between already running apps** - also uses Windows + S search
+        3. **Avoid clicking on taskbar icons or Start menu** - these are slower and less reliable
+        4. **For common apps, use simple names:** "chrome", "notepad", "calculator", "word", "excel", etc.
+        
+        **EXECUTION PRIORITY ORDER:**
+        1. **Hotkeys first** - Use keyboard shortcuts when available (Ctrl+S, Ctrl+C, Ctrl+V, etc.)
+        2. **Type text** - Use agent.type() for text input rather than clicking individual characters
+        3. **Click only when necessary** - Use agent.click() only when hotkeys/typing won't work
+        
+        **EXAMPLES:**
+        - To open Chrome: agent.open("chrome")
+        - To save a file: agent.hotkey(["ctrl", "s"])
+        - To copy text: agent.hotkey(["ctrl", "c"])
+        - To type in a field: agent.type(element_id, "your text here")
+
         Your response should be formatted like this:
         (Previous action verification)
         Carefully analyze based on the screenshot and the accessibility tree if the previous action was successful. If the previous action was not successful, provide a reason for the failure.
@@ -44,7 +61,7 @@ class PROCEDURAL_MEMORY:
         (Grounded Action)
         Translate the next action into code using the provided API methods. Format the code like this:
         ```python
-        agent.click(123, 1, "left")
+        agent.open("chrome")
         ```
         Note for the code:
         1. Only perform one action at a time.
@@ -55,7 +72,7 @@ class PROCEDURAL_MEMORY:
         5. If you think the task is already completed, you can return `agent.done()` in the code block.
         6. If you think the task cannot be completed, you can return `agent.fail()` in the code block.
         7. Do not do anything other than the exact specified task. Return with `agent.done()` immediately after the task is completed or `agent.fail()` if it cannot be completed.
-        8. Whenever possible use hot-keys or typing rather than mouse clicks.
+        8. **PRIORITIZE: agent.open() for launching apps, hotkeys for common actions, typing over clicking**
         9. My computer's password is 'password', feel free to use it when you need sudo rights
         """
         )
@@ -64,7 +81,19 @@ class PROCEDURAL_MEMORY:
     # MANAGER_PROMPT = """You are a planning agent for solving GUI navigation tasks. You will be provided the initial configuration of a system including accessibility, screenshot and other information. You need to solve the following task: TASK_DESCRIPTION. You will describe in as much detail as possible the steps required to complete the task by a GUI agent. Please do not include any verification steps in your plan that is not your responsibility. IMPORTANT: Your plan should be as concize as possible and should not include any unnecessary steps. Do not fine-tune, or embellish anything or cause any side effects. Generate the plan that can be accomplished in the shortest time. Please take the current state into account when generating the plan. Please provide the plan in a step-by-step format and make sure you do not include anything that's already done in the GUI in your plan."""
 
     # TODO: exploring this prompt
-    MANAGER_PROMPT = """You are a planning agent for solving GUI navigation tasks. You will be provided the initial configuration of a system including accessibility, screenshot and other information. You need to solve the following task: TASK_DESCRIPTION. You will describe in as much detail as possible the steps required to complete the task by a GUI agent. Please do not include any verification steps in your plan that is not your responsibility. IMPORTANT: Your plan should be as concize as possible and should not include any unnecessary steps. Do not fine-tune, or embellish anything or cause any side effects. Generate the plan that can be accomplished in the shortest time. Please take the current state into account when generating the plan. Please provide the plan in a step-by-step format and make sure you do not include anything that's already done in the GUI in your plan. You don't need to arrange the steps in order just list out everything that needs to be done. You may follow a dependency structure. Note that the execution agent that will complete your plan can't actually see everything thats visible to you."""
+    MANAGER_PROMPT = """You are a planning agent for solving GUI navigation tasks. You will be provided the initial configuration of a system including accessibility, screenshot and other information. You need to solve the following task: TASK_DESCRIPTION. You will describe in as much detail as possible the steps required to complete the task by a GUI agent. Please do not include any verification steps in your plan that is not your responsibility. IMPORTANT: Your plan should be as concize as possible and should not include any unnecessary steps. Do not fine-tune, or embellish anything or cause any side effects. Generate the plan that can be accomplished in the shortest time. Please take the current state into account when generating the plan. Please provide the plan in a step-by-step format and make sure you do not include anything that's already done in the GUI in your plan. You don't need to arrange the steps in order just list out everything that needs to be done. You may follow a dependency structure. Note that the execution agent that will complete your plan can't actually see everything thats visible to you.
+    
+    **IMPORTANT PLANNING GUIDELINES FOR WINDOWS:**
+    1. **For opening applications:** Plan to use Windows + S search (the agent has agent.open() method) - this is faster than clicking Start menu or taskbar
+    2. **For common actions:** Prioritize keyboard shortcuts over mouse clicks (Ctrl+S for save, Ctrl+C for copy, etc.)
+    3. **For text input:** Plan to type directly rather than clicking individual UI elements
+    4. **Use simple app names:** "chrome", "notepad", "calculator", "word", "excel" work well with Windows search
+    
+    **EFFICIENT PLANNING EXAMPLES:**
+    - Instead of "Click Start menu, navigate to applications, click Chrome" → Plan: "Open Chrome using search"
+    - Instead of "Click File menu, click Save" → Plan: "Save file using Ctrl+S shortcut"
+    - Instead of "Click in text box, click each character" → Plan: "Type text directly in the text field"
+    """
 
     # NOTE: below prompt results in suboptimal initial plans
     # MANAGER_PROMPT = """You are an expert planning agent for GUI tasks. You will be provided with an initial state of the system including accessibility, screenshot and other information and the final state represented by the task: TASK_DESCRIPTION. Tell me everything that needs to be done in order to reach the goal state. You don't need to arrange the steps in order just list out everything that needs to be done. You may follow a dependency structure."""

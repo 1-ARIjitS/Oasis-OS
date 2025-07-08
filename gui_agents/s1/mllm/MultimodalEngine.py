@@ -4,7 +4,10 @@
 
 import os
 import re
+import time
+import threading
 from io import BytesIO
+from typing import Optional
 
 import backoff
 import numpy as np
@@ -13,6 +16,11 @@ import requests
 from anthropic import Anthropic
 from openai import APIConnectionError, APIError, AzureOpenAI, OpenAI, RateLimitError
 from PIL import Image
+
+try:
+    from groq import Groq  # type: ignore
+except ImportError:
+    Groq = None
 
 # TODO: Import only if module exists, else ignore
 # from llava.model.builder import load_pretrained_model
@@ -96,19 +104,17 @@ class LMMEngineOpenAI(LMMEngine):
 
 
 class LMMEngineAnthropic(LMMEngine):
-    def __init__(self, api_key=None, model=None, **kwargs):
-        assert model is not None, "model must be provided"
-        self.model = model
-
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
         api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if api_key is None:
+        if not api_key:
             raise ValueError(
-                "An API Key needs to be provided in either the api_key parameter or as an environment variable named ANTHROPIC_API_KEY"
+                "Anthropic API Key is required. Please set the ANTHROPIC_API_KEY environment variable or pass it as a parameter.\n"
+                "You can get an API key from: https://console.anthropic.com/"
             )
-
+        
         self.api_key = api_key
-
-        self.llm_client = Anthropic(api_key=self.api_key)
+        self.model = model
+        self.client = Anthropic(api_key=self.api_key)
 
     @backoff.on_exception(
         backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
@@ -116,7 +122,7 @@ class LMMEngineAnthropic(LMMEngine):
     def generate(self, messages, temperature=0.0, max_new_tokens=None, **kwargs):
         """Generate the next message based on previous messages"""
         return (
-            self.llm_client.messages.create(
+            self.client.messages.create(
                 system=messages[0]["content"][0]["text"],
                 model=self.model,
                 messages=messages[1:],
@@ -232,18 +238,36 @@ class LMMEnginevLLM(LMMEngine):
     def __init__(
         self, base_url=None, api_key=None, model=None, rate_limit=-1, **kwargs
     ):
+        """Initialize a vLLM/Ollama engine.
+
+        If no base_url is supplied and no vLLM_ENDPOINT_URL environment variable is
+        set, we *assume* the user is running an Ollama server locally and default
+        to `http://localhost:11434/v1` – the OpenAI-compatible endpoint exposed
+        by Ollama. This allows passing `--engine-type vllm` for local Ollama
+        models without any additional configuration.
+
+        Likewise, if no api_key is supplied we set a dummy key ("ollama") so the
+        OpenAI python client does not complain about a missing key.
+        """
+
         assert model is not None, "model must be provided"
         self.model = model
-        self.api_key = api_key
 
-        self.base_url = base_url or os.getenv("vLLM_ENDPOINT_URL")
-        if self.base_url is None:
-            raise ValueError(
-                "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named vLLM_ENDPOINT_URL"
-            )
+        # Provide sensible defaults for local Ollama setups
+        self.base_url = (
+            base_url
+            or os.getenv("vLLM_ENDPOINT_URL")
+            or os.getenv("VLLM_ENDPOINT_URL")
+            or "http://localhost:11434/v1"
+        )
 
+        # OpenAI client insists on an api_key – use a placeholder if not supplied
+        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "ollama")
+
+        # Rate limiting configuration (requests per minute)
         self.request_interval = 0 if rate_limit == -1 else 60.0 / rate_limit
 
+        # Instantiate OpenAI-compatible client pointed at the local/vLLM endpoint
         self.llm_client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
     # @backoff.on_exception(backoff.expo, (APIConnectionError, APIError, RateLimitError), max_tries=10)
@@ -258,12 +282,165 @@ class LMMEnginevLLM(LMMEngine):
         **kwargs
     ):
         """Generate the next message based on previous messages"""
-        completion = self.llm_client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=max_new_tokens if max_new_tokens else 4096,
-            temperature=temperature,
-            top_p=top_p,
-            extra_body={"repetition_penalty": repetition_penalty},
+        try:
+            completion = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                temperature=temperature,
+                top_p=top_p,
+                extra_body={"repetition_penalty": repetition_penalty},
+            )
+            return completion.choices[0].message.content
+        except APIError as e:
+            # Common case with Ollama: model has not been pulled yet
+            if getattr(e, "code", "") == "model_not_found":
+                raise RuntimeError(
+                    f"Ollama did not recognise the model '{self.model}'. "
+                    "Run `ollama list` to see available models or pull it with "
+                    f"`ollama pull {self.model}` before retrying."
+                ) from e
+            raise
+
+
+class LMMEngineGroq(LMMEngine):
+    """LLM Engine for Groq Cloud models using the OpenAI-compatible REST API."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "llama-3.1-8b-instant",
+        **kwargs,  # Accept and ignore additional parameters like engine_type
+    ):
+        if Groq is None:
+            raise ImportError(
+                "Groq library not installed. Please install it with: pip install groq"
+            )
+            
+        api_key = api_key or os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "Groq API Key is required. Please set the GROQ_API_KEY environment variable or pass it as a parameter.\n"
+                "You can get an API key from: https://console.groq.com/keys"
+            )
+        
+        self.api_key = api_key
+        self.model = model
+        self.client = Groq(api_key=self.api_key)
+
+    @backoff.on_exception(
+        backoff.expo, (APIConnectionError, APIError, RateLimitError), max_time=60
+    )
+    def generate(self, messages, temperature: float = 0.0, max_new_tokens: int | None = None, **kwargs):
+        """Generate the next message based on previous messages"""
+        return (
+            self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                temperature=temperature,
+                **kwargs,
+            )
+            .choices[0]
+            .message.content
         )
-        return completion.choices[0].message.content
+
+
+class LMMEngineOllama(LMMEngine):
+    """LLM Engine for Ollama local models using the native Ollama Python client."""
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model: str = "llama3.2-vision",
+        **kwargs,  # Accept and ignore additional parameters like engine_type
+    ):
+        """Initialize Ollama engine.
+        
+        Args:
+            base_url: Ollama server URL (defaults to http://localhost:11434)
+            api_key: Not used for Ollama but kept for compatibility
+            model: Model name (e.g., "llama3.2-vision:latest")
+        """
+        try:
+            # Import using the exact same pattern as the working test
+            from ollama import chat
+            self.ollama_chat = chat
+        except ImportError:
+            raise ImportError(
+                "Ollama library not installed. Please install it with: pip install ollama"
+            )
+        
+        self.model = model
+        
+        print(f"Ollama engine initialized:")
+        print(f"  Model: {self.model}")
+        print(f"  Using chat function directly")
+
+    def generate(self, messages, temperature: float = 0.0, max_new_tokens: int | None = None, **kwargs):
+        """Generate the next message based on previous messages using Ollama chat API"""
+        try:
+            # Convert messages to Ollama chat format and clean them
+            chat_messages = self._convert_to_chat_messages(messages)
+            
+            # Use the exact same calling pattern as the working test
+            response = self.ollama_chat(
+                model=self.model,
+                messages=chat_messages
+            )
+            
+            # Extract content using the same pattern as working test
+            return response['message']['content']
+            
+        except Exception as e:
+            # Handle common Ollama errors with helpful messages
+            error_msg = str(e).lower()
+            
+            if "model" in error_msg and ("not found" in error_msg or "does not exist" in error_msg):
+                raise RuntimeError(
+                    f"Model '{self.model}' not found in Ollama.\n"
+                    f"Try: ollama pull {self.model}\n"
+                    f"Original error: {e}"
+                ) from e
+            elif "connection" in error_msg or "disconnected" in error_msg or "failed to connect" in error_msg:
+                raise RuntimeError(
+                    f"Cannot connect to Ollama server.\n"
+                    f"Make sure Ollama is running and try again.\n"
+                    f"Original error: {e}"
+                ) from e
+            else:
+                raise RuntimeError(f"Ollama error: {e}") from e
+
+    def _convert_to_chat_messages(self, messages):
+        """Convert OpenAI-style messages to Ollama chat format, filtering out invalid content"""
+        chat_messages = []
+        
+        for message in messages:
+            role = message.get("role", "")
+            content = message.get("content", "")
+            
+            # Skip invalid roles
+            if role not in ["system", "user", "assistant"]:
+                continue
+            
+            # Handle both string and list content formats
+            if isinstance(content, list):
+                # Extract text from multimodal content, skip images for now
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                content = "\n".join(text_parts)
+            
+            # Skip empty content
+            if not content or not content.strip():
+                continue
+            
+            # Add to chat messages in Ollama format (same as working test)
+            chat_messages.append({
+                "role": role,
+                "content": content.strip()
+            })
+        
+        return chat_messages

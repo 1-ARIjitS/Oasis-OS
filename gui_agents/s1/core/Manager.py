@@ -14,6 +14,7 @@ from gui_agents.s1.utils.common_utils import (
     call_llm_safe,
     parse_dag,
 )
+from gui_agents.s1.mllm.MultimodalEngine import LMMEngineGroq, LMMEngineOllama
 
 logger = logging.getLogger("desktopenv.agent")
 
@@ -26,7 +27,6 @@ class Manager(BaseModule):
         engine_params: Dict,
         grounding_agent: ACI,
         local_kb_path: str,
-        search_engine: Optional[str] = None,
         multi_round: bool = False,
         platform: str = platform.system().lower(),
     ):
@@ -55,9 +55,15 @@ class Manager(BaseModule):
         self.planner_history = []
 
         self.turn_count = 0
-        self.search_engine = search_engine
         self.multi_round = multi_round
         self.platform = platform
+        
+        # Enhanced planning state tracking
+        self.plan_attempts = 0
+        self.max_plan_attempts = 3
+        self.previous_failed_plans = []
+        self.successful_subtasks = []
+        self.failed_subtasks = []
 
     def summarize_episode(self, trajectory):
         """Summarize the episode experience for lifelong learning reflection
@@ -83,6 +89,54 @@ class Manager(BaseModule):
 
         return lifelong_learning_reflection
 
+    def _analyze_planning_failure(self, failure_feedback: str, instruction: str) -> str:
+        """Analyze why planning failed and generate better guidance for replanning"""
+        self.plan_attempts += 1
+        
+        failure_analysis = {
+            "attempt": self.plan_attempts,
+            "feedback": failure_feedback,
+            "failed_subtasks": self.failed_subtasks.copy(),
+            "successful_subtasks": self.successful_subtasks.copy()
+        }
+        self.previous_failed_plans.append(failure_analysis)
+        
+        # Generate enhanced failure feedback for better replanning
+        enhanced_feedback = failure_feedback
+        
+        if self.plan_attempts > 1:
+            enhanced_feedback += f"\n\nPREVIOUS PLANNING FAILURES:\n"
+            for i, failure in enumerate(self.previous_failed_plans[-2:], 1):  # Last 2 failures
+                enhanced_feedback += f"Attempt {failure['attempt']}: {failure['feedback']}\n"
+            
+            enhanced_feedback += f"\nSUCCESSFUL SUBTASKS (don't repeat): {self.successful_subtasks}\n"
+            enhanced_feedback += f"FAILED SUBTASKS (need alternative approach): {self.failed_subtasks}\n"
+            
+            # Add specific guidance based on failure patterns
+            if self.plan_attempts >= 2:
+                enhanced_feedback += f"\nREPLANNING GUIDANCE:\n"
+                enhanced_feedback += f"- Break down complex tasks into smaller, more atomic steps\n"
+                enhanced_feedback += f"- Prioritize keyboard shortcuts over mouse interactions\n"
+                enhanced_feedback += f"- Ensure each step has clear success criteria\n"
+                enhanced_feedback += f"- Consider alternative approaches for previously failed subtasks\n"
+                
+            if self.plan_attempts >= self.max_plan_attempts:
+                enhanced_feedback += f"\nFINAL ATTEMPT: This is the last replanning attempt. Create the simplest possible plan that directly achieves the goal.\n"
+        
+        return enhanced_feedback
+
+    def _update_subtask_tracking(self, subtask: str, success: bool):
+        """Track successful and failed subtasks"""
+        if success:
+            if subtask not in self.successful_subtasks:
+                self.successful_subtasks.append(subtask)
+            # Remove from failed list if it was there
+            if subtask in self.failed_subtasks:
+                self.failed_subtasks.remove(subtask)
+        else:
+            if subtask not in self.failed_subtasks:
+                self.failed_subtasks.append(subtask)
+
     def _generate_step_by_step_plan(
         self, observation: Dict, instruction: str, failure_feedback: str = ""
     ) -> Tuple[Dict, str]:
@@ -93,15 +147,14 @@ class Manager(BaseModule):
         tree_input = agent.linearize_and_annotate_tree(observation)
         observation["linearized_accessibility_tree"] = tree_input
 
-        # Perform Retrieval only at the first planning step
-        if self.turn_count == 0:
+        # Analyze failure feedback for better replanning
+        if failure_feedback and failure_feedback.strip():
+            failure_feedback = self._analyze_planning_failure(failure_feedback, instruction)
+            logger.info(f"Enhanced failure feedback for replanning: {failure_feedback}")
 
-            self.search_query = self.knowledge_base.formulate_query(
-                instruction, observation
-            )
-
+        # Perform Retrieval only at the first planning step or when replanning with failures
+        if self.turn_count == 0 or failure_feedback:
             retrieved_experience = ""
-            integrated_knowledge = ""
             # Retrieve most similar narrative (task) experience
             most_similar_task, retrieved_experience = (
                 self.knowledge_base.retrieve_narrative_experience(instruction)
@@ -111,31 +164,9 @@ class Manager(BaseModule):
                 most_similar_task + "\n" + retrieved_experience.strip(),
             )
 
-            # Retrieve knowledge from the web if search_engine is provided
-            if self.search_engine is not None:
-                retrieved_knowledge = self.knowledge_base.retrieve_knowledge(
-                    instruction=instruction,
-                    search_query=self.search_query,
-                    search_engine=self.search_engine,
-                )
-                logger.info("RETRIEVED KNOWLEDGE: %s", retrieved_knowledge)
-
-                if retrieved_knowledge is not None:
-                    # Fuse the retrieved knowledge and experience
-                    integrated_knowledge = self.knowledge_base.knowledge_fusion(
-                        observation=observation,
-                        instruction=instruction,
-                        web_knowledge=retrieved_knowledge,
-                        similar_task=most_similar_task,
-                        experience=retrieved_experience,
-                    )
-                    logger.info("INTEGRATED KNOWLEDGE: %s", integrated_knowledge)
-
-            integrated_knowledge = integrated_knowledge or retrieved_experience
-
-            # Add the integrated knowledge to the task instruction in the system prompt
-            if integrated_knowledge:
-                instruction += f"\nYou may refer to some retrieved knowledge if you think they are useful.{integrated_knowledge}"
+            # Add the retrieved experience to the task instruction in the system prompt
+            if retrieved_experience and retrieved_experience.strip() and retrieved_experience != "None":
+                instruction += f"\nYou may refer to some retrieved experience if you think it is useful: {retrieved_experience}"
 
             self.generator_agent.add_system_prompt(
                 self.generator_agent.system_prompt.replace(
@@ -154,16 +185,28 @@ class Manager(BaseModule):
             )
         )
 
-        self.generator_agent.add_message(
-            generator_message, image_content=observation.get("screenshot", None)
-        )
+        if isinstance(self.generator_agent.engine, LMMEngineGroq) or isinstance(self.generator_agent.engine, LMMEngineOllama):
+            self.generator_agent.add_message(generator_message)
+        else:
+            self.generator_agent.add_message(
+                generator_message, image_content=observation.get("screenshot", None)
+            )
 
         logger.info("GENERATING HIGH LEVEL PLAN")
 
         plan = call_llm_safe(self.generator_agent)
 
         if plan == "":
-            raise Exception("Plan Generation Failed - Fix the Prompt")
+            error_msg = (
+                "Plan generation failed. This could be due to:\n"
+                "1. Invalid or missing API key\n"
+                "2. Model is overloaded or unavailable\n"
+                "3. Input too long or malformed\n"
+                "4. Network connectivity issues\n"
+                "Please check your configuration and try again."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
         logger.info("HIGH LEVEL STEP BY STEP PLAN: %s", plan)
 
@@ -179,7 +222,6 @@ class Manager(BaseModule):
         cost = input_tokens * (0.0050 / 1000) + output_tokens * (0.0150 / 1000)
 
         planner_info = {
-            "search_query": self.search_query,
             "goal_plan": plan,
             "num_input_tokens_plan": input_tokens,
             "num_output_tokens_plan": output_tokens,
@@ -203,6 +245,14 @@ class Manager(BaseModule):
 
         dag = parse_dag(dag_raw)
 
+        # Fallback: if parsing failed, build a linear DAG from plan steps
+        if not isinstance(dag, Dag):
+            logger.warning("Failed to parse DAG; falling back to linear plan execution.")
+            steps = [s.strip() for s in plan.split("\n") if s.strip()]
+            nodes = [Node(name=f"step_{i+1}", info=step) for i, step in enumerate(steps)]
+            edges = [[nodes[i], nodes[i + 1]] for i in range(len(nodes) - 1)] if len(nodes) > 1 else []
+            dag = Dag(nodes=nodes, edges=edges)
+
         logger.info("Generated DAG: %s", dag_raw)
 
         self.dag_translator_agent.add_message(dag_raw)
@@ -211,7 +261,6 @@ class Manager(BaseModule):
             self.dag_translator_agent.messages
         )
 
-        # Set Cost based on GPT-4o
         cost = input_tokens * (0.0050 / 1000) + output_tokens * (0.0150 / 1000)
 
         dag_info = {
@@ -220,8 +269,6 @@ class Manager(BaseModule):
             "num_output_tokens_dag": output_tokens,
             "dag_cost": cost,
         }
-
-        assert type(dag) == Dag
 
         return dag_info, dag
 
@@ -259,14 +306,14 @@ class Manager(BaseModule):
         self,
         instruction: str,
         observation: Dict,
-        failure_feedback: str = None,
+        failure_feedback: Optional[str] = None,
     ):
         """Generate the action list based on the instruction
         instruction:str: Instruction for the task
         """
         # Generate the high level plan
         planner_info, plan = self._generate_step_by_step_plan(
-            observation, instruction, failure_feedback
+            observation, instruction, failure_feedback or ""
         )
 
         # Generate the DAG

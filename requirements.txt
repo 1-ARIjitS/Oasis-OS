@@ -2,6 +2,7 @@ numpy
 backoff
 pandas
 openai
+groq
 anthropic
 fastapi
 uvicorn

@@ -1,0 +1,10 @@
+Speech Transcript - demo
+Started: 2025-07-08 02:14:04
+----------------------------------------
+
+[7.75s] open calculator
+[16.31s] 1 plus 1 the result is to close calculator
+
+----------------------------------------
+Session ended: 2025-07-08 02:14:22
+Total voice commands: 2
